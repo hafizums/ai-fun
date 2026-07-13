@@ -10,15 +10,50 @@ IMPLEMENTED — AWAITING GATEKEEPER REVIEW
 - Branch: `master`
 - Initial Git status: clean, tracking `origin/master`
 
+## Findings corrected
+
+Correction pass starting HEAD: `155d38925862ebfcb36f868f7c153431e80c2c72`.
+
+### Atomic-claim design
+
+`PromptGenerationService._atomic_claim()` performs a single SQLAlchemy
+`UPDATE generation_jobs SET ... WHERE id = ? AND (status = 'DRAFT' OR (status = 'FAILED' AND failed_stage = 'prompt_generation'))`.
+
+Only when `rowcount == 1` does the service enqueue work. Competing claimants receive `PermissionError` → HTTP `409`. Unknown IDs still return `404`. Claim clears prior errors and `prompt_json`, sets `PROMPT_GENERATING` / stage / progress / `updated_at`, and commits before `TaskRunner.submit()`. Submission failures still mark `TASK_SUBMISSION_FAILED`.
+
+### Concurrent test method
+
+`test_concurrent_prompt_claim_only_one_wins` uses the file-backed temp SQLite DB from fixtures, a `threading.Barrier(2)`, and eight repeated rounds. Exactly one accept, one conflict, one submit, and one fake LLM call are asserted each round.
+
+### Null and non-finite validation
+
+Prompt string fields and `event_description` reject `null` and non-strings (no `str()` coercion). Transition seconds require finite numbers. JSON parsing uses `parse_constant` to reject `NaN` / `Infinity` / `-Infinity`. `WAVESPEED_LLM_TIMEOUT_SECONDS` must be finite before range checks. Invalid LLM payloads fail the job with `LLM_INVALID_RESPONSE` and `prompt_json = null`.
+
+### Correct corrupted-state behavior
+
+`GET /api/jobs/{id}/prompts`:
+- `409` when status ≠ `PROMPT_READY`
+- `500` when `PROMPT_READY` but `prompt_json` missing
+- `500` when stored envelope cannot be parsed/validated
+- Never returns corrupted content
+
+### Revised status transitions
+
+Generic map:
+- `PROMPT_GENERATING` → `PROMPT_READY` | `FAILED` only (removed `BASE_IMAGE_GENERATING`)
+- `FAILED` has no outgoing transitions in the generic map
+- Eligible prompt retries occur only via the atomic claim SQL (`failed_stage == prompt_generation`)
+- `apply_status_transition()` cannot move unrelated FAILED jobs into prompt generation
+
 ## Implemented
 
 - Status and database compatibility: added `PROMPT_READY`; Gate 2 transitions; deletable idle state; no SQLite CHECK migration required
 - LLM provider: `WaveSpeedLLMProvider` via official `openai.OpenAI` (`chat.completions.create`) against `WAVESPEED_LLM_BASE_URL`
 - Prompt contract: centralized system prompt requiring 9:16, one person, static camera, age-appropriate clothing, hand occlusion, background preservation
 - JSON validation: plain object or single full-response ```json``` fence; strict Pydantic package; no repair calls
-- Background service: commit `PROMPT_GENERATING` then `TaskRunner.submit`; worker opens its own session; one LLM call; canonical envelope persistence
+- Background service: atomic claim → commit → `TaskRunner.submit`; worker opens its own session; one LLM call; canonical envelope persistence
 - API endpoints: `POST /api/jobs/{id}/generate-prompts` (`202`), `GET /api/jobs/{id}/prompts`
-- Retry behavior: `FAILED` → `PROMPT_GENERATING` only when `failed_stage == "prompt_generation"`
+- Retry behavior: atomic claim for DRAFT or FAILED prompt-generation jobs only
 
 ## Prompt package
 
@@ -62,18 +97,16 @@ Live generated prompt text is intentionally omitted from this report.
 
 | Method | Path | Behavior |
 |--------|------|----------|
-| `POST` | `/api/jobs/{id}/generate-prompts` | Validate body; transition to `PROMPT_GENERATING`; enqueue background task; `202`. `404` unknown. `409` wrong state / in-progress. `500` on submit failure after safe FAIL. |
-| `GET` | `/api/jobs/{id}/prompts` | Typed envelope when `PROMPT_READY`. `404` unknown. `409` not ready. `500` corrupted stored JSON. |
-
-Existing Gate 1 routes unchanged in behavior aside from allowing delete of `PROMPT_READY`.
+| `POST` | `/api/jobs/{id}/generate-prompts` | Atomic claim → enqueue; `202`. `404` unknown. `409` conflict/ineligible. `500` on submit failure after safe FAIL. |
+| `GET` | `/api/jobs/{id}/prompts` | Typed envelope when ready. `409` not ready. `500` missing/corrupt stored JSON. |
 
 ## Tests
 
 - Commands:
   - `pytest -q`
   - `ruff check app tests`
-- Total: 76
-- Passed: 76
+- Total: 156
+- Passed: 156
 - Failed: 0
 - Skipped: 0
 - Warnings: 1 (Starlette TestClient/`httpx` deprecation)
@@ -97,7 +130,7 @@ Existing Gate 1 routes unchanged in behavior aside from allowing delete of `PROM
 
 ## SQLite compatibility
 
-Gate 1 DDL stores `status` as `VARCHAR(24)` with **no CHECK constraint**. `PROMPT_READY` fits the column. **No compatibility migration was required.** Regression test `test_gate1_compatible_sqlite_database_starts` boots against a hand-built Gate 1 schema and successfully writes `PROMPT_READY`.
+Gate 1 DDL stores `status` as `VARCHAR(24)` with **no CHECK constraint**. `PROMPT_READY` fits the column. **No compatibility migration was required.**
 
 ## Known limitations
 
@@ -109,7 +142,8 @@ Gate 1 DDL stores `status` as `VARCHAR(24)` with **no CHECK constraint**. `PROMP
 
 ## Deferred work
 
-- Base image generation (WaveSpeed GPT Image 2)
+- Base image generation (WaveSpeed GPT Image 2) — Gate 3+
+- `PROMPT_READY` → `BASE_IMAGE_GENERATING`
 - Reference upload and character edit
 - Wan 2.2 image-to-video and Fun Control
 - Transition detection and FFmpeg merge
@@ -118,6 +152,7 @@ Gate 1 DDL stores `status` as `VARCHAR(24)` with **no CHECK constraint**. `PROMP
 
 ## Git information
 
-- Implementation commit: `bbc5e16e089c636d64a62acda1632cb7bfb194c1`
-- Final HEAD: _(docs follow-up may trail)_
-- Final Git status: clean working tree on `master` after Gate 2 commits
+- Correction starting HEAD: `155d38925862ebfcb36f868f7c153431e80c2c72`
+- Implementation commit: _(filled after commit)_
+- Final HEAD: _(filled after commit)_
+- Final Git status: _(filled after commit)_

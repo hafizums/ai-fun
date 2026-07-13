@@ -96,10 +96,16 @@ def get_prompts(job_id: str, request: Request) -> PromptEnvelopeResponse:
         job = session.get(GenerationJob, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        if job.status != JobStatus.PROMPT_READY or not job.prompt_json:
+        if job.status != JobStatus.PROMPT_READY:
             raise HTTPException(
                 status_code=409,
                 detail="Prompts are not ready for this job",
+            )
+        if not job.prompt_json:
+            logger.error("PROMPT_READY job_id=%s missing prompt_json", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored prompt package is missing",
             )
         try:
             envelope = load_prompt_envelope(job.prompt_json)

@@ -28,9 +28,6 @@ def test_valid_status_transition_succeeds() -> None:
     assert transition_status(JobStatus.DRAFT, JobStatus.PROMPT_GENERATING) == (
         JobStatus.PROMPT_GENERATING
     )
-    assert transition_status(JobStatus.PROMPT_GENERATING, JobStatus.BASE_IMAGE_GENERATING) == (
-        JobStatus.BASE_IMAGE_GENERATING
-    )
     assert transition_status(JobStatus.BASE_IMAGE_GENERATING, JobStatus.BASE_IMAGE_READY) == (
         JobStatus.BASE_IMAGE_READY
     )
@@ -38,9 +35,17 @@ def test_valid_status_transition_succeeds() -> None:
     assert transition_status(JobStatus.PROMPT_GENERATING, JobStatus.PROMPT_READY) == (
         JobStatus.PROMPT_READY
     )
-    assert transition_status(JobStatus.FAILED, JobStatus.PROMPT_GENERATING) == (
-        JobStatus.PROMPT_GENERATING
-    )
+    assert transition_status(JobStatus.PROMPT_GENERATING, JobStatus.FAILED) == JobStatus.FAILED
+
+
+def test_prompt_generating_to_base_image_rejected() -> None:
+    with pytest.raises(InvalidStatusTransitionError):
+        transition_status(JobStatus.PROMPT_GENERATING, JobStatus.BASE_IMAGE_GENERATING)
+
+
+def test_generic_failed_to_prompt_generating_rejected() -> None:
+    with pytest.raises(InvalidStatusTransitionError):
+        transition_status(JobStatus.FAILED, JobStatus.PROMPT_GENERATING)
 
 
 def test_interrupted_active_jobs_become_failed(client, session_factory) -> None:

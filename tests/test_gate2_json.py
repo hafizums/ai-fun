@@ -51,15 +51,15 @@ def test_extra_fields_rejected() -> None:
 
 
 def test_invalid_transition_timing_rejected() -> None:
+    with pytest.raises(LLMInvalidResponseError):
+        parse_prompt_package(
+            package_json(transition_hint={"start_seconds": 3.0, "end_seconds": 2.0})
+        )
     pkg = parse_prompt_package(
-        package_json(transition_hint={"start_seconds": 3.0, "end_seconds": 2.0})
+        package_json(transition_hint={"start_seconds": 1.0, "end_seconds": 6.0})
     )
     with pytest.raises(ValueError):
         pkg.validate_timing(5)
-    with pytest.raises(ValueError):
-        parse_prompt_package(
-            package_json(transition_hint={"start_seconds": 1.0, "end_seconds": 6.0})
-        ).validate_timing(5)
 
 
 def test_invalid_transition_enum_rejected() -> None:

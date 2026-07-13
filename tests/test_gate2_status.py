@@ -29,7 +29,6 @@ def test_prompt_ready_exists() -> None:
 
 def test_gate2_valid_status_transitions() -> None:
     assert transition_status(JobStatus.DRAFT, JobStatus.PROMPT_GENERATING)
-    assert transition_status(JobStatus.FAILED, JobStatus.PROMPT_GENERATING)
     assert transition_status(JobStatus.PROMPT_GENERATING, JobStatus.PROMPT_READY)
     assert transition_status(JobStatus.PROMPT_GENERATING, JobStatus.FAILED)
 
@@ -43,6 +42,18 @@ def test_invalid_transitions_remain_rejected() -> None:
         transition_status(JobStatus.FAILED, JobStatus.DRAFT)
     with pytest.raises(InvalidStatusTransitionError):
         transition_status(JobStatus.COMPLETED, JobStatus.PROMPT_GENERATING)
+    with pytest.raises(InvalidStatusTransitionError):
+        transition_status(JobStatus.PROMPT_GENERATING, JobStatus.BASE_IMAGE_GENERATING)
+    with pytest.raises(InvalidStatusTransitionError):
+        transition_status(JobStatus.FAILED, JobStatus.PROMPT_GENERATING)
+
+
+def test_apply_status_transition_cannot_retry_unrelated_failed() -> None:
+    from app.api.jobs import apply_status_transition
+
+    job = GenerationJob(status=JobStatus.FAILED, failed_stage="base_image")
+    with pytest.raises(InvalidStatusTransitionError):
+        apply_status_transition(job, JobStatus.PROMPT_GENERATING)
 
 
 def test_prompt_ready_not_interrupted(client, session_factory) -> None:

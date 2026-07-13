@@ -17,13 +17,16 @@ ACTIVE_PROCESSING_STATES: frozenset[JobStatus] = frozenset(
     }
 )
 
-# Allowed transitions. Gate 2 adds PROMPT_READY and FAILED → PROMPT_GENERATING.
+# Generic allowed transitions.
+# FAILED → PROMPT_GENERATING is intentionally absent: eligible prompt retries are
+# claimed only via atomic SQL in PromptGenerationService (failed_stage check).
+# PROMPT_GENERATING → BASE_IMAGE_GENERATING is deferred to Gate 3
+# (PROMPT_READY → BASE_IMAGE_GENERATING).
 ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.DRAFT: frozenset({JobStatus.PROMPT_GENERATING, JobStatus.FAILED}),
     JobStatus.PROMPT_GENERATING: frozenset(
         {
             JobStatus.PROMPT_READY,
-            JobStatus.BASE_IMAGE_GENERATING,
             JobStatus.FAILED,
         }
     ),
@@ -39,9 +42,7 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.ANALYZING_TRANSITION: frozenset({JobStatus.FAILED}),
     JobStatus.MERGING: frozenset({JobStatus.FAILED}),
     JobStatus.COMPLETED: frozenset(),
-    # FAILED → PROMPT_GENERATING is only for eligible prompt-generation retries
-    # (failed_stage == "prompt_generation"), enforced by the prompt service.
-    JobStatus.FAILED: frozenset({JobStatus.PROMPT_GENERATING}),
+    JobStatus.FAILED: frozenset(),
 }
 
 
@@ -55,7 +56,7 @@ class InvalidStatusTransitionError(ValueError):
 
 
 def can_transition(current: JobStatus, target: JobStatus) -> bool:
-    """Return True if current → target is allowed."""
+    """Return True if current → target is allowed in the generic map."""
     return target in ALLOWED_TRANSITIONS.get(current, frozenset())
 
 
@@ -66,7 +67,7 @@ def assert_can_transition(current: JobStatus, target: JobStatus) -> None:
 
 
 def transition_status(current: JobStatus, target: JobStatus) -> JobStatus:
-    """Validate and return the target status."""
+    """Validate and return the target status (generic map only)."""
     assert_can_transition(current, target)
     return target
 

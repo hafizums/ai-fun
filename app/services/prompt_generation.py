@@ -7,6 +7,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import and_, or_, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.job import GenerationJob, JobStatus, utc_now
@@ -30,6 +31,7 @@ INITIAL_PROGRESS = 10
 
 TASK_SUBMISSION_FAILED = "TASK_SUBMISSION_FAILED"
 TASK_SUBMISSION_MESSAGE = "Failed to submit the local background prompt-generation task."
+INTERNAL_PAYLOAD_FAILED = "LLM_REQUEST_FAILED"
 
 SAFE_ERROR_MESSAGES: dict[str, str] = {
     "LLM_NOT_CONFIGURED": "The language model provider is not configured.",
@@ -45,14 +47,15 @@ SAFE_ERROR_MESSAGES: dict[str, str] = {
 def canonical_prompt_json(envelope: PromptEnvelope) -> str:
     """Serialize validated envelope with application-controlled JSON."""
     payload = envelope.model_dump(mode="json")
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # Defense: never persist non-standard numeric constants.
+    if any(token in text for token in ("NaN", "Infinity", "-Infinity")):
+        raise LLMInvalidResponseError()
+    return text
 
 
 def is_eligible_prompt_retry(job: GenerationJob) -> bool:
-    return (
-        job.status == JobStatus.FAILED
-        and job.failed_stage == PROMPT_STAGE
-    )
+    return job.status == JobStatus.FAILED and job.failed_stage == PROMPT_STAGE
 
 
 class PromptGenerationService:
@@ -74,73 +77,85 @@ class PromptGenerationService:
     def accept_generation(
         self, job_id: str, request: PromptGenerationRequest
     ) -> GenerationJob:
-        """Transition job to PROMPT_GENERATING, submit worker, return updated job.
+        """Atomically claim a job for prompt generation, then enqueue work.
 
         Raises:
             LookupError: job not found
             PermissionError: wrong state / not eligible (mapped to 409 by API)
             RuntimeError: task submission failed after marking FAILED
         """
-        with self._session_factory() as session:
-            job = session.get(GenerationJob, job_id)
-            if job is None:
-                raise LookupError("Job not found")
+        claimed = self._atomic_claim(job_id)
+        if not claimed:
+            with self._session_factory() as session:
+                job = session.get(GenerationJob, job_id)
+                if job is None:
+                    raise LookupError("Job not found")
+                if job.status == JobStatus.PROMPT_GENERATING:
+                    raise PermissionError("Prompt generation is already in progress")
+                raise PermissionError("Job is not eligible for prompt generation")
 
-            if job.status == JobStatus.PROMPT_GENERATING:
-                raise PermissionError("Prompt generation is already in progress")
-
-            if job.status == JobStatus.DRAFT:
-                assert_can_transition(job.status, JobStatus.PROMPT_GENERATING)
-            elif is_eligible_prompt_retry(job):
-                assert_can_transition(job.status, JobStatus.PROMPT_GENERATING)
-            else:
-                raise PermissionError(
-                    "Job is not eligible for prompt generation"
-                )
-
-            job.status = JobStatus.PROMPT_GENERATING
-            job.current_stage = PROMPT_STAGE
-            job.progress_percent = INITIAL_PROGRESS
-            job.error_code = None
-            job.error_message = None
-            job.failed_stage = None
-            # Clear prior prompt package on intentional retry/start.
-            job.prompt_json = None
-            job.updated_at = utc_now()
-            session.commit()
-            session.refresh(job)
-            job_snapshot_id = job.id
-            # Detach plain request for worker (no ORM objects).
-            request_payload = request.model_dump()
+        request_payload = request.model_dump()
 
         try:
             self._task_runner.submit(
                 self.run_generation_task,
-                job_snapshot_id,
+                job_id,
                 request_payload,
             )
         except Exception:
             logger.error(
                 "TaskRunner.submit failed for job_id=%s exception_class=submit_failure",
-                job_snapshot_id,
+                job_id,
             )
             self._mark_failed(
-                job_snapshot_id,
+                job_id,
                 error_code=TASK_SUBMISSION_FAILED,
                 error_message=TASK_SUBMISSION_MESSAGE,
             )
             raise RuntimeError(TASK_SUBMISSION_MESSAGE) from None
 
         with self._session_factory() as session:
-            job = session.get(GenerationJob, job_snapshot_id)
+            job = session.get(GenerationJob, job_id)
             assert job is not None
             session.expunge(job)
             return job
 
+    def _atomic_claim(self, job_id: str) -> bool:
+        """Compare-and-set claim: DRAFT or eligible FAILED prompt jobs only.
+
+        Returns True only when exactly one row was updated.
+        """
+        now = utc_now()
+        stmt = (
+            update(GenerationJob)
+            .where(
+                GenerationJob.id == job_id,
+                or_(
+                    GenerationJob.status == JobStatus.DRAFT,
+                    and_(
+                        GenerationJob.status == JobStatus.FAILED,
+                        GenerationJob.failed_stage == PROMPT_STAGE,
+                    ),
+                ),
+            )
+            .values(
+                status=JobStatus.PROMPT_GENERATING,
+                current_stage=PROMPT_STAGE,
+                progress_percent=INITIAL_PROGRESS,
+                error_code=None,
+                error_message=None,
+                failed_stage=None,
+                prompt_json=None,
+                updated_at=now,
+            )
+        )
+        with self._session_factory() as session:
+            result = session.execute(stmt)
+            session.commit()
+            return int(result.rowcount or 0) == 1
+
     def run_generation_task(self, job_id: str, request_payload: dict[str, Any]) -> None:
         """Worker entrypoint: opens its own DB session; one LLM call."""
-        request = PromptGenerationRequest.model_validate(request_payload)
-
         with self._session_factory() as session:
             job = session.get(GenerationJob, job_id)
             if job is None:
@@ -155,6 +170,18 @@ class PromptGenerationService:
                 return
 
         try:
+            # Validate copied payload inside the failure boundary so unexpected
+            # internal corruption cannot leave the job stuck in PROMPT_GENERATING.
+            try:
+                request = PromptGenerationRequest.model_validate(request_payload)
+            except Exception:
+                logger.error(
+                    "Prompt worker payload validation failed job_id=%s "
+                    "(payload withheld)",
+                    job_id,
+                )
+                raise LLMInvalidResponseError() from None
+
             completion = self._llm.generate_prompt_completion(request)
             package = parse_prompt_package(completion.content)
             try:
@@ -194,8 +221,8 @@ class PromptGenerationService:
             )
             self._mark_failed(
                 job_id,
-                error_code="LLM_REQUEST_FAILED",
-                error_message=SAFE_ERROR_MESSAGES["LLM_REQUEST_FAILED"],
+                error_code=INTERNAL_PAYLOAD_FAILED,
+                error_message=SAFE_ERROR_MESSAGES[INTERNAL_PAYLOAD_FAILED],
             )
             return
 
@@ -226,20 +253,18 @@ class PromptGenerationService:
             job = session.get(GenerationJob, job_id)
             if job is None:
                 return
-            if job.status not in {JobStatus.PROMPT_GENERATING, JobStatus.FAILED}:
-                # Only fail from generating (or reinforce submission failure).
-                if job.status != JobStatus.PROMPT_GENERATING:
-                    return
+            if job.status != JobStatus.PROMPT_GENERATING:
+                return
             try:
-                if job.status == JobStatus.PROMPT_GENERATING:
-                    assert_can_transition(job.status, JobStatus.FAILED)
-                    job.status = JobStatus.FAILED
+                assert_can_transition(job.status, JobStatus.FAILED)
             except Exception:
-                job.status = JobStatus.FAILED
+                pass
+            job.status = JobStatus.FAILED
             job.failed_stage = PROMPT_STAGE
             job.error_code = error_code
             job.error_message = error_message
             job.current_stage = PROMPT_STAGE
+            job.prompt_json = None
             job.updated_at = utc_now()
             session.commit()
             logger.error(
@@ -254,7 +279,13 @@ def load_prompt_envelope(prompt_json: str | None) -> PromptEnvelope:
     if not prompt_json:
         raise LLMInvalidResponseError()
     try:
-        data = json.loads(prompt_json)
+        data = json.loads(prompt_json, parse_constant=_reject_persisted_nonfinite)
         return PromptEnvelope.model_validate(data)
+    except LLMInvalidResponseError:
+        raise
     except Exception as exc:
         raise LLMInvalidResponseError() from exc
+
+
+def _reject_persisted_nonfinite(_value: str) -> Any:
+    raise LLMInvalidResponseError()

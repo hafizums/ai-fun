@@ -17,6 +17,11 @@ _FENCE_RE = re.compile(
 )
 
 
+def _reject_nonstandard_number(value: str) -> Any:
+    """Reject JSON NaN / Infinity constants (non-standard and non-finite)."""
+    raise LLMInvalidResponseError("LLM response contains a non-finite numeric constant")
+
+
 def extract_json_text(raw: str | None) -> str:
     """Extract a single JSON object string from model content.
 
@@ -52,7 +57,9 @@ def parse_prompt_package(raw: str | None) -> PromptPackage:
     """Parse content into a strict PromptPackage; never silently fill fields."""
     candidate = extract_json_text(raw)
     try:
-        data: Any = json.loads(candidate)
+        data: Any = json.loads(candidate, parse_constant=_reject_nonstandard_number)
+    except LLMInvalidResponseError:
+        raise
     except json.JSONDecodeError as exc:
         raise LLMInvalidResponseError("LLM response is not valid JSON") from exc
 

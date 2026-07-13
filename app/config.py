@@ -46,14 +46,24 @@ class Settings(BaseSettings):
     ffmpeg_binary: str = Field(default="ffmpeg", alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="ffprobe", alias="FFPROBE_BINARY")
 
-    @field_validator("wavespeed_llm_timeout_seconds")
+    @field_validator("wavespeed_llm_timeout_seconds", mode="before")
     @classmethod
-    def _validate_llm_timeout(cls, value: float) -> float:
-        if value <= 0:
+    def _validate_llm_timeout(cls, value: object) -> float:
+        import math
+
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError("WAVESPEED_LLM_TIMEOUT_SECONDS must be a finite number")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("WAVESPEED_LLM_TIMEOUT_SECONDS must be a finite number") from exc
+        if not math.isfinite(number):
+            raise ValueError("WAVESPEED_LLM_TIMEOUT_SECONDS must be finite")
+        if number <= 0:
             raise ValueError("WAVESPEED_LLM_TIMEOUT_SECONDS must be positive")
-        if value > 600:
+        if number > 600:
             raise ValueError("WAVESPEED_LLM_TIMEOUT_SECONDS must be <= 600")
-        return value
+        return number
 
     @field_validator("storage_root", mode="before")
     @classmethod
