@@ -47,11 +47,16 @@ SAFE_ERROR_MESSAGES: dict[str, str] = {
 def canonical_prompt_json(envelope: PromptEnvelope) -> str:
     """Serialize validated envelope with application-controlled JSON."""
     payload = envelope.model_dump(mode="json")
-    text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    # Defense: never persist non-standard numeric constants.
-    if any(token in text for token in ("NaN", "Infinity", "-Infinity")):
-        raise LLMInvalidResponseError()
-    return text
+    try:
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise LLMInvalidResponseError() from exc
 
 
 def is_eligible_prompt_retry(job: GenerationJob) -> bool:

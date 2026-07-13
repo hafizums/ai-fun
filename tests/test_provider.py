@@ -49,7 +49,7 @@ def test_provider_errors_do_not_expose_api_key() -> None:
     assert secret not in sanitized
     assert "[REDACTED]" in sanitized
 
-    mapped = provider._map_exception(RuntimeError(f"boom key={secret}"))
+    mapped = provider._map_provider_exception(RuntimeError(f"boom key={secret}"))
     assert isinstance(mapped, ProviderRequestError)
     assert secret not in mapped.message
     assert secret not in str(mapped)

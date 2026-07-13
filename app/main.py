@@ -13,6 +13,8 @@ from app.db import create_db_engine, create_session_factory, init_db
 from app.logging_config import configure_logging, get_logger
 from app.providers.wavespeed import WaveSpeedProvider
 from app.providers.wavespeed_llm import WaveSpeedLLMProvider
+from app.services.base_image_generation import BaseImageGenerationService
+from app.services.image_download import ImageDownloader
 from app.services.job_recovery import recover_interrupted_jobs
 from app.services.prompt_generation import PromptGenerationService
 from app.services.storage import StorageService
@@ -28,22 +30,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
-        # Initialize storage
         storage: StorageService = app.state.storage
         storage.ensure_layout()
 
-        # Initialize database (Gate 1 create_all; Gate 2 needs no status migration —
-        # status is VARCHAR(24) without CHECK, and PROMPT_READY fits).
         engine = app.state.engine
         init_db(engine)
 
-        # Recover interrupted in-process jobs
         with app.state.session_factory() as session:
             recovered = recover_interrupted_jobs(session)
             if recovered:
                 logger.warning("Marked %s interrupted job(s) as FAILED", recovered)
 
-        # Start local task runner
         runner: TaskRunner = app.state.task_runner
         runner.start()
         logger.info("Application startup complete (env=%s)", app_settings.app_env)
@@ -59,9 +56,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="AI Fun Motion",
         description=(
             "Local personal-use AI video transformation "
-            "(Gate 2: async structured prompt generation)"
+            "(Gate 3: async base-image generation)"
         ),
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
 
@@ -85,6 +82,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         llm_provider=llm,
         llm_model=app_settings.wavespeed_llm_model,
     )
+    downloader = ImageDownloader(
+        timeout_seconds=app_settings.base_image_download_timeout_seconds,
+        max_bytes=app_settings.base_image_max_download_bytes,
+    )
+    base_image_generation = BaseImageGenerationService(
+        session_factory=session_factory,
+        task_runner=task_runner,
+        media_provider=wavespeed,
+        storage=storage,
+        settings=app_settings,
+        downloader=downloader,
+    )
 
     app.state.settings = app_settings
     app.state.engine = engine
@@ -94,6 +103,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.wavespeed = wavespeed
     app.state.llm = llm
     app.state.prompt_generation = prompt_generation
+    app.state.base_image_generation = base_image_generation
+    app.state.image_downloader = downloader
 
     app.include_router(health.router)
     app.include_router(jobs.router)
@@ -102,5 +113,4 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-# Default ASGI app for uvicorn: `uvicorn app.main:app --host 127.0.0.1`
 app = create_app()

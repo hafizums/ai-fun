@@ -18,10 +18,8 @@ ACTIVE_PROCESSING_STATES: frozenset[JobStatus] = frozenset(
 )
 
 # Generic allowed transitions.
-# FAILED → PROMPT_GENERATING is intentionally absent: eligible prompt retries are
-# claimed only via atomic SQL in PromptGenerationService (failed_stage check).
-# PROMPT_GENERATING → BASE_IMAGE_GENERATING is deferred to Gate 3
-# (PROMPT_READY → BASE_IMAGE_GENERATING).
+# FAILED → *GENERATING retries are intentionally absent from this map and occur
+# only via atomic SQL claims that check failed_stage.
 ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.DRAFT: frozenset({JobStatus.PROMPT_GENERATING, JobStatus.FAILED}),
     JobStatus.PROMPT_GENERATING: frozenset(
@@ -30,11 +28,11 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
             JobStatus.FAILED,
         }
     ),
-    JobStatus.PROMPT_READY: frozenset(),
+    JobStatus.PROMPT_READY: frozenset({JobStatus.BASE_IMAGE_GENERATING}),
     JobStatus.BASE_IMAGE_GENERATING: frozenset(
         {JobStatus.BASE_IMAGE_READY, JobStatus.FAILED}
     ),
-    JobStatus.BASE_IMAGE_READY: frozenset({JobStatus.FAILED}),
+    JobStatus.BASE_IMAGE_READY: frozenset(),
     JobStatus.WAITING_FOR_REFERENCE: frozenset({JobStatus.FAILED}),
     JobStatus.CHARACTER_EDITING: frozenset({JobStatus.FAILED}),
     JobStatus.SOURCE_VIDEO_GENERATING: frozenset({JobStatus.FAILED}),
@@ -76,6 +74,7 @@ DELETABLE_STATUSES: frozenset[JobStatus] = frozenset(
     {
         JobStatus.DRAFT,
         JobStatus.PROMPT_READY,
+        JobStatus.BASE_IMAGE_READY,
         JobStatus.COMPLETED,
         JobStatus.FAILED,
     }

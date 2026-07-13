@@ -11,7 +11,9 @@ from fastapi.testclient import TestClient
 from app.config import Settings, clear_settings_cache
 from app.main import create_app
 from app.models.job import GenerationJob, JobStatus
+from app.services.image_download import ImageDownloader
 from tests.fakes import FakeLLMProvider, install_fake_llm
+from tests.media_fakes import FakeMediaProvider, install_fake_media, make_portrait_bytes
 
 
 @pytest.fixture
@@ -28,6 +30,18 @@ def tmp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("WAVESPEED_LLM_BASE_URL", "https://llm.wavespeed.ai/v1")
     monkeypatch.setenv("WAVESPEED_LLM_MODEL", "openai/gpt-5.1")
     monkeypatch.setenv("WAVESPEED_LLM_TIMEOUT_SECONDS", "120")
+    monkeypatch.setenv(
+        "WAVESPEED_BASE_IMAGE_MODEL", "openai/gpt-image-2/text-to-image"
+    )
+    monkeypatch.setenv("WAVESPEED_BASE_IMAGE_ASPECT_RATIO", "9:16")
+    monkeypatch.setenv("WAVESPEED_BASE_IMAGE_RESOLUTION", "1k")
+    monkeypatch.setenv("WAVESPEED_BASE_IMAGE_QUALITY", "medium")
+    monkeypatch.setenv("WAVESPEED_BASE_IMAGE_OUTPUT_FORMAT", "png")
+    monkeypatch.setenv("WAVESPEED_MEDIA_TIMEOUT_SECONDS", "600")
+    monkeypatch.setenv("WAVESPEED_MEDIA_POLL_INTERVAL_SECONDS", "1")
+    monkeypatch.setenv("BASE_IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "120")
+    monkeypatch.setenv("BASE_IMAGE_MAX_DOWNLOAD_MB", "25")
+    monkeypatch.setenv("BASE_IMAGE_MAX_PIXELS", "25000000")
     monkeypatch.setenv("LOCAL_TASK_WORKERS", "1")
     monkeypatch.setenv("FFMPEG_BINARY", "ffmpeg")
     monkeypatch.setenv("FFPROBE_BINARY", "ffprobe")
@@ -39,8 +53,20 @@ def tmp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
 @pytest.fixture
 def app(tmp_env: Settings):
     application = create_app(settings=tmp_env)
-    # Default offline fake — no real network in automated tests.
     install_fake_llm(application, FakeLLMProvider())
+    fake_media = FakeMediaProvider()
+    install_fake_media(application, fake_media)
+    # Default downloader returns a valid portrait PNG for the fake HTTPS URL.
+    portrait = make_portrait_bytes()
+    from tests.media_fakes import mock_image_transport
+
+    downloader = ImageDownloader(
+        timeout_seconds=tmp_env.base_image_download_timeout_seconds,
+        max_bytes=tmp_env.base_image_max_download_bytes,
+        transport=mock_image_transport(body=portrait),
+    )
+    application.state.image_downloader = downloader
+    application.state.base_image_generation._downloader = downloader
     return application
 
 
@@ -58,6 +84,11 @@ def session_factory(app):
 @pytest.fixture
 def fake_llm(app) -> FakeLLMProvider:
     return app.state.llm
+
+
+@pytest.fixture
+def fake_media(app) -> FakeMediaProvider:
+    return app.state.wavespeed
 
 
 def set_job_status(session_factory, job_id: str, status: JobStatus) -> GenerationJob:

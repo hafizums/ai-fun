@@ -14,6 +14,7 @@ dependencies = [
     "wavespeed>=1.0.9",
     "openai>=1.50.0,<2",
     "httpx>=0.27.0",
+    "pillow>=10.4.0,<12",
 ]
 
 [project.optional-dependencies]
