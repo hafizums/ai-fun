@@ -107,5 +107,5 @@ Concurrent claim: `test_concurrent_claim_enqueues_once` — passed (barrier; exa
 ## Git information
 
 - Implementation commit: `d566f6522f90a9b49880fd77ebf872aa53a18bb6`
-- Final HEAD: *(updated after this report commit)*
-- Final Git status: *(updated after push)*
+- Final HEAD: _(docs follow-up may trail)_
+- Final Git status: clean working tree on `master` after Gate 3 commits
