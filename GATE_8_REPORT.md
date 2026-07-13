@@ -146,5 +146,5 @@ Auth, deployment hardening, cloud storage, billing, analytics, multi-user suppor
 ## Git information
 
 - Starting HEAD: `4cea05c84201cc914ac29970c882b25082e7f7ff`
-- Implementation commit: (see push)
-- Final HEAD: (see push)
+- Implementation commit: `e49ea2c0ad0c0207a0380e28c6b98932ec28ab1c`
+- Final HEAD: `e49ea2c0ad0c0207a0380e28c6b98932ec28ab1c`
