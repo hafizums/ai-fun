@@ -10,6 +10,20 @@ IMPLEMENTED — AWAITING GATEKEEPER REVIEW
 - Branch: `master`
 - Initial Git status: clean, tracking `origin/master` at the starting commit; Gate 3 work was uncommitted until this report’s implementation commit
 
+## Format-validation correction
+
+Correction starting HEAD: `2ce12f92780f612b3a92d5c0260d0177a0bb1ded`.
+
+### Finding
+
+`inspect_local_png()` previously accepted any Pillow-readable image whose path ended in `.png`, including JPEG/WebP/GIF bytes renamed to `base_image.png`. Ready endpoints could then serve those bytes with `Content-Type: image/png`. `normalize_base_image()` also accepted any single-frame Pillow format (e.g. BMP, TIFF, static GIF).
+
+### Correction
+
+- `normalize_base_image()` requires source `img.format` in `{PNG, JPEG, WEBP}` only; other formats map to `BASE_IMAGE_INVALID_FILE` without exposing the source format.
+- `inspect_local_png()` requires `img.format == "PNG"`, fully loads pixels (rejects truncated PNG), and retains portrait / ~9:16 / pixel / animation checks.
+- Metadata and file endpoints return safe `500` for inconsistent `BASE_IMAGE_READY` artifacts (renamed non-PNG, truncated PNG, wrong aspect ratio). The file endpoint never returns `image/png` for non-PNG bytes.
+
 ## Implemented
 
 - Status transitions: `PROMPT_READY → BASE_IMAGE_GENERATING`; `BASE_IMAGE_GENERATING → BASE_IMAGE_READY | FAILED`; `BASE_IMAGE_READY` idle and deletable; generic `FAILED → BASE_IMAGE_GENERATING` forbidden
@@ -17,7 +31,7 @@ IMPLEMENTED — AWAITING GATEKEEPER REVIEW
 - WaveSpeed model invocation: public `Client.run` via `WaveSpeedProvider.run_model` against `WAVESPEED_API_BASE_URL`
 - Provider result validation: non-empty HTTPS outputs only; reject `data:` / Base64; map fixed `MEDIA_*` errors
 - Secure download: streaming `httpx`, HTTPS-only redirects, byte cap, partial cleanup
-- Pillow validation and normalization: reject animated / landscape / wrong ~9:16 / oversized; re-encode PNG; atomic `os.replace`
+- Pillow validation and normalization: approved PNG/JPEG/WebP sources only; reject animated / landscape / wrong ~9:16 / oversized; re-encode PNG; atomic `os.replace`; published file must be genuine PNG
 - Local artifact endpoints: metadata + PNG file under `/api/jobs/{id}/base-image*`
 - Retry behavior: eligible base-image failures only; preserves `prompt_json`; clears partial files
 - Gate 2 cleanup: `json.dumps(..., allow_nan=False)` for canonical prompt JSON
@@ -55,20 +69,22 @@ IMPLEMENTED — AWAITING GATEKEEPER REVIEW
 |--------|------|-------|
 | `POST` | `/api/jobs/{job_id}/generate-base-image` | `202` accepted; `404` unknown; `409` wrong/ineligible state |
 | `GET` | `/api/jobs/{job_id}/base-image` | Metadata when `BASE_IMAGE_READY` |
-| `GET` | `/api/jobs/{job_id}/base-image/file` | `image/png`; private cache header; no provider URL |
+| `GET` | `/api/jobs/{job_id}/base-image/file` | genuine `image/png` only; private cache header; no provider URL |
 
 Persisted local URL shape: `/api/jobs/{job_id}/base-image/file`
 
 ## Tests
 
 - Commands: `pytest -q`; `ruff check app tests`
-- Total: 189
-- Passed: 189
+- Total: 193
+- Passed: 193
 - Failed: 0
 - Skipped: 0
 - Warnings: 1 (Starlette/`httpx` TestClient deprecation from dependency)
 
 Concurrent claim: `test_concurrent_claim_enqueues_once` — passed (barrier; exactly one accept, one conflict, one submit, one fake media call, one published image).
+
+Format-validation tests added for approved sources, unsupported sources (GIF/BMP/TIFF), renamed non-PNG ready files, truncated PNG, wrong aspect ratio, and endpoint `500`/`200` behavior.
 
 ## Manual live smoke test
 
@@ -87,7 +103,7 @@ Concurrent claim: `test_concurrent_claim_enqueues_once` — passed (barrier; exa
 - Provider-result handling: validated app-owned result only; no raw response storage
 - URL handling: HTTPS only; query strings never logged or stored in `base_image_url`
 - Download limits: connect/read timeouts, redirect bound, max download MB
-- Image validation: Pillow verify; reject animated / non-portrait / wrong ratio / excess pixels
+- Image validation: Pillow; approved source formats only; published PNG identity required; reject animated / non-portrait / wrong ratio / excess pixels / truncated data
 - Path safety: paths via `StorageService` under storage root only
 - Partial-file cleanup: removed on failure and before eligible retry
 
@@ -107,5 +123,6 @@ Concurrent claim: `test_concurrent_claim_enqueues_once` — passed (barrier; exa
 ## Git information
 
 - Implementation commit: `d566f6522f90a9b49880fd77ebf872aa53a18bb6`
-- Final HEAD: `203107731a1c1aa7170a9dc2160729e01e7a7927`
-- Final Git status: clean working tree on `master`, synced with `origin/master`
+- Correction commit: `c31d592`
+- Final HEAD: _(docs follow-up may trail)_
+- Final Git status: clean working tree on `master` after Gate 3 correction
