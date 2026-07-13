@@ -126,5 +126,5 @@ Reuses `controlled_video_url`. No new columns. No reset.
 ## Git information
 
 - Starting commit: `e13fe4386a1ab41979797e37fec1964ee91b1582`
-- Implementation commit: *(filled after commit)*
-- Final HEAD: *(filled after commit)*
+- Implementation commit: `e3b468fb4d90765995887455a92a02b86bd6e8c6`
+- Final HEAD: `e3b468fb4d90765995887455a92a02b86bd6e8c6`
