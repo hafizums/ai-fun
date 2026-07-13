@@ -123,6 +123,6 @@ Format-validation tests added for approved sources, unsupported sources (GIF/BMP
 ## Git information
 
 - Implementation commit: `d566f6522f90a9b49880fd77ebf872aa53a18bb6`
-- Correction commit: `c31d592`
-- Final HEAD: _(docs follow-up may trail)_
+- Correction commit: `c31d592e8a382912dc8ed006e6654f5f11f23241`
+- Final HEAD: `d51ab30663c6b327de66f1f69aefa8228fe9cbcf`
 - Final Git status: clean working tree on `master` after Gate 3 correction
