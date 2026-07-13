@@ -116,6 +116,6 @@ Concurrent claim: `test_concurrent_edit_claim_enqueues_once` — passed.
 
 ## Git information
 
-- Implementation commit: *(filled after commit)*
+- Implementation commit: `c9788ad146e87429ab66ca0198092a51ce327d06`
 - Final HEAD: _(docs follow-up may trail)_
 - Final Git status: clean working tree on `master` after Gate 4 commits
