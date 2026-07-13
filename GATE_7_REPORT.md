@@ -151,4 +151,4 @@ No schema reset. Uses existing `final_video_path` and `transition_time_seconds`.
 
 - Starting HEAD: `b596fca5510a4d76b2754cb45bad0e788071f183`
 - Implementation commit: `5c056e2fd35c56e9fdf877ca36e2b71edc874c4e`
-- Final HEAD: `70806018577b481eb4d21f6f872f3d7951494e62`
+- Final HEAD: `026496c2d05295b42340d9a9f93980191a624195`
