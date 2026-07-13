@@ -118,6 +118,6 @@ Gate 1 DDL stores `status` as `VARCHAR(24)` with **no CHECK constraint**. `PROMP
 
 ## Git information
 
-- Implementation commit: _(filled after commit)_
-- Final HEAD: _(filled after commit)_
-- Final Git status: _(filled after commit)_
+- Implementation commit: `bbc5e16e089c636d64a62acda1632cb7bfb194c1`
+- Final HEAD: _(docs follow-up may trail)_
+- Final Git status: clean working tree on `master` after Gate 2 commits
