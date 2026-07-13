@@ -1,22 +1,20 @@
 """WaveSpeedAI provider adapter.
 
-Verified against wavespeed Python SDK 1.0.9 (Client.run, Client.upload).
-
-Public SDK surface used here:
+Verified against wavespeed Python SDK public surface:
 - Client(api_key=..., base_url=...)
 - Client.upload(file) -> download URL string
 - Client.run(model, input) -> {"outputs": [...]}
 
-Prediction polling:
-- The public SDK does not expose get_prediction().
-- Client._get_result(request_id) hits GET /api/v3/predictions/{id}/result
-  (verified in installed package source). Gate 1 wraps that verified endpoint
-  for the abstraction; generation is not invoked from Gate 1 routes.
+Gate 1 uses WAVESPEED_API_BASE_URL for the media SDK only.
+WAVESPEED_LLM_BASE_URL is retained in settings for Gate 2 and is never passed
+to this provider.
+
+get_prediction is deferred: the public SDK has no polling helper, and Gate 1
+does not rely on private SDK methods.
 
 Safe check for POST /api/settings/test-wavespeed:
-- No lightweight authenticated account endpoint is documented in the SDK.
-- Gate 1 therefore returns a configuration-only result (key present + client
-  constructible) without making a paid or generative request.
+- Configuration-only: key present + Client constructible.
+- No private SDK helpers; no paid or generative network request.
 """
 
 from __future__ import annotations
@@ -39,12 +37,17 @@ logger = logging.getLogger(__name__)
 
 
 class WaveSpeedProvider(MediaProvider):
-    """Adapter around the official wavespeed.Client."""
+    """Adapter around the official wavespeed.Client (media API base URL only)."""
 
     def __init__(self, api_key: str, base_url: str) -> None:
         self._api_key = (api_key or "").strip()
         self._base_url = (base_url or "").rstrip("/")
         self._client: Any | None = None
+
+    @property
+    def api_base_url(self) -> str:
+        """Media API base URL passed to the WaveSpeed SDK."""
+        return self._base_url
 
     def is_configured(self) -> bool:
         return bool(self._api_key)
@@ -67,9 +70,8 @@ class WaveSpeedProvider(MediaProvider):
     def check_configuration(self) -> dict[str, Any]:
         """Configuration-only check — no network generation request.
 
-        The installed WaveSpeed SDK (1.0.9) exposes Client.run / Client.upload
-        but no documented lightweight authenticated probe. Returning a clearly
-        labeled configuration-only result avoids inventing an API call.
+        Constructing the SDK client is sufficient. Private helpers such as
+        _get_headers() are not used.
         """
         if not self.is_configured():
             return {
@@ -83,13 +85,7 @@ class WaveSpeedProvider(MediaProvider):
             }
 
         try:
-            client = self._ensure_client()
-            # Touch headers builder to confirm key is accepted by the SDK
-            # without performing a network request.
-            headers = client._get_headers()
-            auth = headers.get("Authorization", "")
-            if not auth.startswith("Bearer "):
-                raise ProviderAuthenticationError("Provider auth header was not formed")
+            self._ensure_client()
         except ProviderError:
             raise
         except Exception as exc:
@@ -101,9 +97,9 @@ class WaveSpeedProvider(MediaProvider):
             "configured": True,
             "base_url": self._base_url,
             "message": (
-                "WaveSpeed API key is present and the client can be constructed. "
-                "No network authentication probe was performed because the SDK "
-                "does not expose a verified lightweight auth-only endpoint. "
+                "WaveSpeed API key is present and the media SDK client can be "
+                "constructed. No network authentication probe was performed because "
+                "the SDK does not expose a verified lightweight auth-only endpoint. "
                 "Generation calls are deferred to later gates."
             ),
         }
@@ -133,29 +129,17 @@ class WaveSpeedProvider(MediaProvider):
             raise self._map_exception(exc) from exc
 
     def get_prediction(self, prediction_id: str) -> dict[str, Any]:
-        """Fetch prediction result via verified Client._get_result endpoint wrapper.
+        """Deferred until a public or intentionally implemented polling API exists.
 
-        Public SDK has no get_prediction(); this uses the installed client's
-        result endpoint helper. Deferred for actual use until later gates.
+        The public wavespeed SDK does not expose get_prediction(). Gate 1 does not
+        call private Client methods (_get_result, etc.).
         """
-        if not prediction_id or ".." in prediction_id:
-            raise ProviderRequestError("Invalid prediction id")
-        client = self._ensure_client()
-        try:
-            get_result = getattr(client, "_get_result", None)
-            if get_result is None:
-                raise ProviderConfigurationError(
-                    "Installed wavespeed Client does not expose a verified "
-                    "prediction result method; defer get_prediction to a later gate."
-                )
-            result = get_result(prediction_id)
-            if not isinstance(result, dict):
-                return {"data": result}
-            return result
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise self._map_exception(exc) from exc
+        raise ProviderConfigurationError(
+            "get_prediction is not available in Gate 1. The public WaveSpeed SDK "
+            "does not expose a prediction polling method, and private SDK methods "
+            "are not used. Implement polling in a later gate when a supported "
+            "public mechanism is available."
+        )
 
     def _map_exception(self, exc: Exception) -> ProviderError:
         message = sanitize_provider_message(str(exc), api_key=self._api_key)

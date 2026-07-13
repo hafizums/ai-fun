@@ -24,8 +24,12 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     wavespeed_api_key: str = Field(default="", alias="WAVESPEED_API_KEY")
-    wavespeed_llm_base_url: str = Field(
+    wavespeed_api_base_url: str = Field(
         default="https://api.wavespeed.ai",
+        alias="WAVESPEED_API_BASE_URL",
+    )
+    wavespeed_llm_base_url: str = Field(
+        default="https://llm.wavespeed.ai/v1",
         alias="WAVESPEED_LLM_BASE_URL",
     )
     storage_root: Path = Field(default=PROJECT_ROOT / "storage", alias="STORAGE_ROOT")

@@ -23,6 +23,8 @@ def tmp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
     monkeypatch.setenv("WAVESPEED_API_KEY", "")
+    monkeypatch.setenv("WAVESPEED_API_BASE_URL", "https://api.wavespeed.ai")
+    monkeypatch.setenv("WAVESPEED_LLM_BASE_URL", "https://llm.wavespeed.ai/v1")
     monkeypatch.setenv("LOCAL_TASK_WORKERS", "1")
     monkeypatch.setenv("FFMPEG_BINARY", "ffmpeg")
     monkeypatch.setenv("FFPROBE_BINARY", "ffprobe")

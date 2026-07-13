@@ -8,11 +8,15 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, TypeVar
 
-from app.logging_config import sanitize_log_message
-
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# Fixed safe description — never include exception args/message (may contain secrets).
+_SAFE_TASK_FAILURE_MESSAGE = (
+    "Background task failed. Exception details are withheld from logs to avoid "
+    "secret leakage; the error is available on the returned Future."
+)
 
 
 class TaskRunner:
@@ -67,9 +71,12 @@ class TaskRunner:
             try:
                 return fn(*args, **kwargs)
             except Exception as exc:
-                logger.exception(
-                    "Background task failed: %s",
-                    sanitize_log_message(f"{type(exc).__name__}: {exc}"),
+                # Do not use logger.exception / exc_info: formatted tracebacks can
+                # embed secret-bearing exception messages.
+                logger.error(
+                    "%s exception_class=%s",
+                    _SAFE_TASK_FAILURE_MESSAGE,
+                    type(exc).__name__,
                 )
                 raise
 

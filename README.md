@@ -53,7 +53,8 @@ See `.env.example`. Important variables:
 | `DATABASE_URL` | SQLite in project dir | SQLAlchemy database |
 | `STORAGE_ROOT` | `./storage` | Local artifact root |
 | `WAVESPEED_API_KEY` | empty | Provider credential (never commit) |
-| `WAVESPEED_LLM_BASE_URL` | `https://api.wavespeed.ai` | Provider base URL |
+| `WAVESPEED_API_BASE_URL` | `https://api.wavespeed.ai` | Media generation / upload SDK base URL |
+| `WAVESPEED_LLM_BASE_URL` | `https://llm.wavespeed.ai/v1` | LLM endpoint reserved for Gate 2 (not used by media SDK) |
 | `LOCAL_TASK_WORKERS` | `1` | ThreadPoolExecutor size |
 | `FFMPEG_BINARY` / `FFPROBE_BINARY` | `ffmpeg` / `ffprobe` | Media tooling |
 
@@ -75,7 +76,7 @@ Never commit a real `.env` or API key.
 - **Task runner**: in-process `ThreadPoolExecutor`. Tasks are **not** persisted across process restarts. On startup, active processing jobs are marked `FAILED` with `error_code=APP_RESTARTED`.
 - **Database**: SQLite via SQLAlchemy. Gate 1 uses controlled `create_all`. Introduce schema migrations before material schema evolution.
 - **Storage**: `storage/uploads`, `generated`, `temporary`, `final` with path-traversal protection.
-- **WaveSpeed**: adapter wraps verified SDK methods `Client.upload` and `Client.run`. Generation is not called from Gate 1 routes.
+- **WaveSpeed**: adapter wraps verified public SDK methods `Client.upload` and `Client.run` against `WAVESPEED_API_BASE_URL`. `get_prediction` is deferred (no private SDK usage). Generation is not called from Gate 1 routes. `WAVESPEED_LLM_BASE_URL` is reserved for Gate 2.
 
 ## Tests
 

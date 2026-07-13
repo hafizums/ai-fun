@@ -65,7 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     task_runner = TaskRunner(max_workers=app_settings.local_task_workers)
     wavespeed = WaveSpeedProvider(
         api_key=app_settings.wavespeed_api_key,
-        base_url=app_settings.wavespeed_llm_base_url,
+        base_url=app_settings.wavespeed_api_base_url,
     )
 
     app.state.settings = app_settings
