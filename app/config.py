@@ -32,11 +32,28 @@ class Settings(BaseSettings):
         default="https://llm.wavespeed.ai/v1",
         alias="WAVESPEED_LLM_BASE_URL",
     )
+    wavespeed_llm_model: str = Field(
+        default="openai/gpt-5.1",
+        alias="WAVESPEED_LLM_MODEL",
+    )
+    wavespeed_llm_timeout_seconds: float = Field(
+        default=120.0,
+        alias="WAVESPEED_LLM_TIMEOUT_SECONDS",
+    )
     storage_root: Path = Field(default=PROJECT_ROOT / "storage", alias="STORAGE_ROOT")
     max_reference_image_mb: int = Field(default=10, alias="MAX_REFERENCE_IMAGE_MB")
     local_task_workers: int = Field(default=1, ge=1, alias="LOCAL_TASK_WORKERS")
     ffmpeg_binary: str = Field(default="ffmpeg", alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="ffprobe", alias="FFPROBE_BINARY")
+
+    @field_validator("wavespeed_llm_timeout_seconds")
+    @classmethod
+    def _validate_llm_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("WAVESPEED_LLM_TIMEOUT_SECONDS must be positive")
+        if value > 600:
+            raise ValueError("WAVESPEED_LLM_TIMEOUT_SECONDS must be <= 600")
+        return value
 
     @field_validator("storage_root", mode="before")
     @classmethod

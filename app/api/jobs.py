@@ -1,4 +1,4 @@
-"""Job CRUD API endpoints."""
+"""Job CRUD and prompt-generation API endpoints."""
 
 from __future__ import annotations
 
@@ -8,7 +8,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import func
 
 from app.models.job import GenerationJob, JobStatus, utc_now
+from app.providers.llm_exceptions import LLMInvalidResponseError
 from app.schemas.job import DeleteResponse, JobListResponse, JobResponse
+from app.schemas.prompt_api import GeneratePromptsAcceptedResponse, PromptEnvelopeResponse
+from app.schemas.prompts import PromptGenerationRequest
+from app.services.prompt_generation import load_prompt_envelope
 from app.services.status_transitions import is_deletable
 from app.services.storage import StoragePathError
 
@@ -56,6 +60,58 @@ def list_jobs(
         )
 
 
+@router.post(
+    "/{job_id}/generate-prompts",
+    response_model=GeneratePromptsAcceptedResponse,
+    status_code=202,
+)
+def generate_prompts(
+    job_id: str,
+    body: PromptGenerationRequest,
+    request: Request,
+) -> GeneratePromptsAcceptedResponse:
+    """Accept async prompt generation (no provider call in this request)."""
+    service = request.app.state.prompt_generation
+    try:
+        job = service.accept_generation(job_id, body)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return GeneratePromptsAcceptedResponse(
+        id=job.id,
+        status=job.status.value,
+        current_stage=job.current_stage,
+        progress_percent=job.progress_percent,
+    )
+
+
+@router.get("/{job_id}/prompts", response_model=PromptEnvelopeResponse)
+def get_prompts(job_id: str, request: Request) -> PromptEnvelopeResponse:
+    """Return the typed stored prompt envelope when ready."""
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.PROMPT_READY or not job.prompt_json:
+            raise HTTPException(
+                status_code=409,
+                detail="Prompts are not ready for this job",
+            )
+        try:
+            envelope = load_prompt_envelope(job.prompt_json)
+        except LLMInvalidResponseError as exc:
+            logger.error("Corrupted prompt_json for job_id=%s", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored prompt package is corrupted",
+            ) from exc
+        return PromptEnvelopeResponse.model_validate(envelope.model_dump(mode="json"))
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job(job_id: str, request: Request) -> JobResponse:
     with request.app.state.session_factory() as session:
@@ -67,7 +123,7 @@ def get_job(job_id: str, request: Request) -> JobResponse:
 
 @router.delete("/{job_id}", response_model=DeleteResponse)
 def delete_job(job_id: str, request: Request) -> DeleteResponse:
-    """Delete DRAFT / COMPLETED / FAILED jobs and their local files."""
+    """Delete DRAFT / PROMPT_READY / COMPLETED / FAILED jobs and local files."""
     storage = request.app.state.storage
     with request.app.state.session_factory() as session:
         job = session.get(GenerationJob, job_id)
@@ -78,7 +134,7 @@ def delete_job(job_id: str, request: Request) -> DeleteResponse:
                 status_code=409,
                 detail=(
                     f"Cannot delete job in active status {job.status.value}. "
-                    "Only DRAFT, COMPLETED, or FAILED jobs may be deleted."
+                    "Only DRAFT, PROMPT_READY, COMPLETED, or FAILED jobs may be deleted."
                 ),
             )
         try:

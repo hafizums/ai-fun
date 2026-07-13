@@ -17,7 +17,14 @@ API_DEFAULT = "https://api.wavespeed.ai"
 LLM_DEFAULT = "https://llm.wavespeed.ai/v1"
 
 
-def test_missing_wavespeed_key_reported_safely(client: TestClient) -> None:
+def test_missing_wavespeed_key_reported_safely(
+    client: TestClient, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app.state.settings, "wavespeed_api_key", "")
+    app.state.wavespeed = WaveSpeedProvider(
+        api_key="",
+        base_url="https://api.wavespeed.ai",
+    )
     response = client.post("/api/settings/test-wavespeed")
     assert response.status_code == 200
     body = response.json()

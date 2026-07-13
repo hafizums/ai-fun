@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings, clear_settings_cache
 from app.main import create_app
 from app.models.job import GenerationJob, JobStatus
+from tests.fakes import FakeLLMProvider, install_fake_llm
 
 
 @pytest.fixture
@@ -22,9 +23,11 @@ def tmp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("STORAGE_ROOT", str(storage_root))
-    monkeypatch.setenv("WAVESPEED_API_KEY", "")
+    monkeypatch.setenv("WAVESPEED_API_KEY", "test-local-key-not-real")
     monkeypatch.setenv("WAVESPEED_API_BASE_URL", "https://api.wavespeed.ai")
     monkeypatch.setenv("WAVESPEED_LLM_BASE_URL", "https://llm.wavespeed.ai/v1")
+    monkeypatch.setenv("WAVESPEED_LLM_MODEL", "openai/gpt-5.1")
+    monkeypatch.setenv("WAVESPEED_LLM_TIMEOUT_SECONDS", "120")
     monkeypatch.setenv("LOCAL_TASK_WORKERS", "1")
     monkeypatch.setenv("FFMPEG_BINARY", "ffmpeg")
     monkeypatch.setenv("FFPROBE_BINARY", "ffprobe")
@@ -35,7 +38,10 @@ def tmp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
 
 @pytest.fixture
 def app(tmp_env: Settings):
-    return create_app(settings=tmp_env)
+    application = create_app(settings=tmp_env)
+    # Default offline fake — no real network in automated tests.
+    install_fake_llm(application, FakeLLMProvider())
+    return application
 
 
 @pytest.fixture
@@ -49,6 +55,11 @@ def session_factory(app):
     return app.state.session_factory
 
 
+@pytest.fixture
+def fake_llm(app) -> FakeLLMProvider:
+    return app.state.llm
+
+
 def set_job_status(session_factory, job_id: str, status: JobStatus) -> GenerationJob:
     """Directly set job status for test setup (bypasses transition rules)."""
     with session_factory() as session:
@@ -57,6 +68,5 @@ def set_job_status(session_factory, job_id: str, status: JobStatus) -> Generatio
         job.status = status
         session.commit()
         session.refresh(job)
-        # Detach attributes we need
         session.expunge(job)
         return job

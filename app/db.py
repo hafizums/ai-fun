@@ -46,9 +46,12 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def init_db(engine: Engine) -> None:
-    """Create tables if they do not exist (Gate 1 controlled bootstrap).
+    """Create tables if they do not exist (controlled bootstrap).
 
-    Schema migrations should be introduced before material schema evolution.
+    Gate 2 note: JobStatus.PROMPT_READY requires no SQLite migration. Gate 1
+    stores status as VARCHAR(24) without a CHECK constraint, and PROMPT_READY
+    fits that column. Introduce a real migration framework before material
+    schema evolution.
     """
     # Import models so metadata is populated.
     from app import models  # noqa: F401

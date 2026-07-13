@@ -17,12 +17,17 @@ ACTIVE_PROCESSING_STATES: frozenset[JobStatus] = frozenset(
     }
 )
 
-# Gate 1 allowed transitions. Later gates add workflow edges here.
+# Allowed transitions. Gate 2 adds PROMPT_READY and FAILED → PROMPT_GENERATING.
 ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.DRAFT: frozenset({JobStatus.PROMPT_GENERATING, JobStatus.FAILED}),
     JobStatus.PROMPT_GENERATING: frozenset(
-        {JobStatus.BASE_IMAGE_GENERATING, JobStatus.FAILED}
+        {
+            JobStatus.PROMPT_READY,
+            JobStatus.BASE_IMAGE_GENERATING,
+            JobStatus.FAILED,
+        }
     ),
+    JobStatus.PROMPT_READY: frozenset(),
     JobStatus.BASE_IMAGE_GENERATING: frozenset(
         {JobStatus.BASE_IMAGE_READY, JobStatus.FAILED}
     ),
@@ -34,7 +39,9 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.ANALYZING_TRANSITION: frozenset({JobStatus.FAILED}),
     JobStatus.MERGING: frozenset({JobStatus.FAILED}),
     JobStatus.COMPLETED: frozenset(),
-    JobStatus.FAILED: frozenset(),
+    # FAILED → PROMPT_GENERATING is only for eligible prompt-generation retries
+    # (failed_stage == "prompt_generation"), enforced by the prompt service.
+    JobStatus.FAILED: frozenset({JobStatus.PROMPT_GENERATING}),
 }
 
 
@@ -65,7 +72,12 @@ def transition_status(current: JobStatus, target: JobStatus) -> JobStatus:
 
 
 DELETABLE_STATUSES: frozenset[JobStatus] = frozenset(
-    {JobStatus.DRAFT, JobStatus.COMPLETED, JobStatus.FAILED}
+    {
+        JobStatus.DRAFT,
+        JobStatus.PROMPT_READY,
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+    }
 )
 
 

@@ -2,15 +2,15 @@
 
 Local personal-use AI video transformation application.
 
-**Gate 1** delivers the application foundation only: FastAPI, SQLite, SQLAlchemy, local filesystem storage, an in-process task runner, WaveSpeed provider abstraction, FFmpeg/ffprobe detection, and automated tests.
+**Gate 2** adds asynchronous structured prompt generation via WaveSpeed’s OpenAI-compatible GPT-5.1 endpoint. Gate 1 foundation (FastAPI, SQLite, local storage, task runner, media provider abstraction) remains.
 
-Gate 1 does **not** generate images or videos.
+This gate does **not** generate images or videos.
 
 ## Requirements
 
 - Python 3.11+
 - FFmpeg and ffprobe on `PATH` (or set `FFMPEG_BINARY` / `FFPROBE_BINARY`)
-- Optional: WaveSpeed API key for later gates ([access key](https://wavespeed.ai/accesskey))
+- Optional: WaveSpeed API key for live LLM smoke tests ([access key](https://wavespeed.ai/accesskey))
 
 ## PowerShell setup
 
@@ -20,7 +20,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 Copy-Item .env.example .env
-# Edit .env and set WAVESPEED_API_KEY when you need provider access (later gates).
+# Edit .env and set WAVESPEED_API_KEY for live LLM calls.
 ```
 
 ## Start (local only)
@@ -52,15 +52,17 @@ See `.env.example`. Important variables:
 |----------|---------|---------|
 | `DATABASE_URL` | SQLite in project dir | SQLAlchemy database |
 | `STORAGE_ROOT` | `./storage` | Local artifact root |
-| `WAVESPEED_API_KEY` | empty | Provider credential (never commit) |
+| `WAVESPEED_API_KEY` | empty | Shared credential for media SDK and LLM (never commit) |
 | `WAVESPEED_API_BASE_URL` | `https://api.wavespeed.ai` | Media generation / upload SDK base URL |
-| `WAVESPEED_LLM_BASE_URL` | `https://llm.wavespeed.ai/v1` | LLM endpoint reserved for Gate 2 (not used by media SDK) |
+| `WAVESPEED_LLM_BASE_URL` | `https://llm.wavespeed.ai/v1` | OpenAI-compatible LLM base URL |
+| `WAVESPEED_LLM_MODEL` | `openai/gpt-5.1` | Chat model for prompt generation |
+| `WAVESPEED_LLM_TIMEOUT_SECONDS` | `120` | LLM request timeout (1–600) |
 | `LOCAL_TASK_WORKERS` | `1` | ThreadPoolExecutor size |
 | `FFMPEG_BINARY` / `FFPROBE_BINARY` | `ffmpeg` / `ffprobe` | Media tooling |
 
 Never commit a real `.env` or API key.
 
-## API (Gate 1)
+## API
 
 | Method | Path | Behavior |
 |--------|------|----------|
@@ -68,15 +70,24 @@ Never commit a real `.env` or API key.
 | `POST` | `/api/jobs` | Create job in `DRAFT` |
 | `GET` | `/api/jobs` | List jobs newest first |
 | `GET` | `/api/jobs/{id}` | Get one job |
-| `DELETE` | `/api/jobs/{id}` | Delete `DRAFT` / `COMPLETED` / `FAILED` only |
-| `POST` | `/api/settings/test-wavespeed` | Configuration-only WaveSpeed check |
+| `DELETE` | `/api/jobs/{id}` | Delete `DRAFT` / `PROMPT_READY` / `COMPLETED` / `FAILED` |
+| `POST` | `/api/jobs/{id}/generate-prompts` | Accept async prompt generation (`202`) |
+| `GET` | `/api/jobs/{id}/prompts` | Typed prompt envelope when `PROMPT_READY` |
+| `POST` | `/api/settings/test-wavespeed` | Configuration-only media WaveSpeed check |
+
+### Prompt generation flow
+
+`DRAFT` → `POST .../generate-prompts` → `PROMPT_GENERATING` → background GPT-5.1 → `PROMPT_READY`
+
+Failed prompt jobs (`failed_stage == prompt_generation`) may retry via the same endpoint.
 
 ## Architecture notes
 
 - **Task runner**: in-process `ThreadPoolExecutor`. Tasks are **not** persisted across process restarts. On startup, active processing jobs are marked `FAILED` with `error_code=APP_RESTARTED`.
-- **Database**: SQLite via SQLAlchemy. Gate 1 uses controlled `create_all`. Introduce schema migrations before material schema evolution.
+- **Database**: SQLite via SQLAlchemy. `create_all` bootstrap; Gate 2 adds `PROMPT_READY` with no SQLite migration (status is `VARCHAR(24)` without CHECK).
 - **Storage**: `storage/uploads`, `generated`, `temporary`, `final` with path-traversal protection.
-- **WaveSpeed**: adapter wraps verified public SDK methods `Client.upload` and `Client.run` against `WAVESPEED_API_BASE_URL`. `get_prediction` is deferred (no private SDK usage). Generation is not called from Gate 1 routes. `WAVESPEED_LLM_BASE_URL` is reserved for Gate 2.
+- **Media WaveSpeed**: public SDK `Client.upload` / `Client.run` against `WAVESPEED_API_BASE_URL` (not called in Gate 2 routes).
+- **LLM**: official `openai` client against `WAVESPEED_LLM_BASE_URL` (`chat.completions.create`, model `openai/gpt-5.1`). JSON is prompt-enforced and locally validated (no `response_format` assumption).
 
 ## Tests
 
@@ -86,6 +97,8 @@ pytest -q
 ruff check app tests
 ```
 
-## Hard constraints (this project)
+Automated tests use fake LLM providers and never make paid network requests.
 
-No Docker, Redis, Celery/RQ/Dramatiq, PostgreSQL, cloud storage, or authentication in Gate 1.
+## Hard constraints
+
+No Docker, Redis, Celery/RQ/Dramatiq, PostgreSQL, cloud storage, or authentication.

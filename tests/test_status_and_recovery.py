@@ -35,6 +35,12 @@ def test_valid_status_transition_succeeds() -> None:
         JobStatus.BASE_IMAGE_READY
     )
     assert transition_status(JobStatus.DRAFT, JobStatus.FAILED) == JobStatus.FAILED
+    assert transition_status(JobStatus.PROMPT_GENERATING, JobStatus.PROMPT_READY) == (
+        JobStatus.PROMPT_READY
+    )
+    assert transition_status(JobStatus.FAILED, JobStatus.PROMPT_GENERATING) == (
+        JobStatus.PROMPT_GENERATING
+    )
 
 
 def test_interrupted_active_jobs_become_failed(client, session_factory) -> None:

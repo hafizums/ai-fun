@@ -12,7 +12,9 @@ from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, init_db
 from app.logging_config import configure_logging, get_logger
 from app.providers.wavespeed import WaveSpeedProvider
+from app.providers.wavespeed_llm import WaveSpeedLLMProvider
 from app.services.job_recovery import recover_interrupted_jobs
+from app.services.prompt_generation import PromptGenerationService
 from app.services.storage import StorageService
 from app.services.task_runner import TaskRunner
 
@@ -30,7 +32,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         storage: StorageService = app.state.storage
         storage.ensure_layout()
 
-        # Initialize database (Gate 1: create_all; introduce migrations before evolution)
+        # Initialize database (Gate 1 create_all; Gate 2 needs no status migration —
+        # status is VARCHAR(24) without CHECK, and PROMPT_READY fits).
         engine = app.state.engine
         init_db(engine)
 
@@ -54,8 +57,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="AI Fun Motion",
-        description="Local personal-use AI video transformation (Gate 1 foundation)",
-        version="0.1.0",
+        description=(
+            "Local personal-use AI video transformation "
+            "(Gate 2: async structured prompt generation)"
+        ),
+        version="0.2.0",
         lifespan=lifespan,
     )
 
@@ -67,6 +73,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         api_key=app_settings.wavespeed_api_key,
         base_url=app_settings.wavespeed_api_base_url,
     )
+    llm = WaveSpeedLLMProvider(
+        api_key=app_settings.wavespeed_api_key,
+        base_url=app_settings.wavespeed_llm_base_url,
+        model=app_settings.wavespeed_llm_model,
+        timeout_seconds=app_settings.wavespeed_llm_timeout_seconds,
+    )
+    prompt_generation = PromptGenerationService(
+        session_factory=session_factory,
+        task_runner=task_runner,
+        llm_provider=llm,
+        llm_model=app_settings.wavespeed_llm_model,
+    )
 
     app.state.settings = app_settings
     app.state.engine = engine
@@ -74,6 +92,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.storage = storage
     app.state.task_runner = task_runner
     app.state.wavespeed = wavespeed
+    app.state.llm = llm
+    app.state.prompt_generation = prompt_generation
 
     app.include_router(health.router)
     app.include_router(jobs.router)
