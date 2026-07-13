@@ -42,8 +42,11 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.CHARACTER_EDITING: frozenset(
         {JobStatus.CHARACTER_EDIT_READY, JobStatus.FAILED}
     ),
-    JobStatus.CHARACTER_EDIT_READY: frozenset(),
-    JobStatus.SOURCE_VIDEO_GENERATING: frozenset({JobStatus.FAILED}),
+    JobStatus.CHARACTER_EDIT_READY: frozenset({JobStatus.SOURCE_VIDEO_GENERATING}),
+    JobStatus.SOURCE_VIDEO_GENERATING: frozenset(
+        {JobStatus.SOURCE_VIDEO_READY, JobStatus.FAILED}
+    ),
+    JobStatus.SOURCE_VIDEO_READY: frozenset(),
     JobStatus.CONTROL_VIDEO_GENERATING: frozenset({JobStatus.FAILED}),
     JobStatus.ANALYZING_TRANSITION: frozenset({JobStatus.FAILED}),
     JobStatus.MERGING: frozenset({JobStatus.FAILED}),
@@ -85,6 +88,7 @@ DELETABLE_STATUSES: frozenset[JobStatus] = frozenset(
         JobStatus.BASE_IMAGE_READY,
         JobStatus.REFERENCE_READY,
         JobStatus.CHARACTER_EDIT_READY,
+        JobStatus.SOURCE_VIDEO_READY,
         JobStatus.COMPLETED,
         JobStatus.FAILED,
     }

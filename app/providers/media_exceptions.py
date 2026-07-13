@@ -127,3 +127,53 @@ class EditImageInvalidFileError(MediaError):
 class EditImageInvalidAspectRatioError(MediaError):
     code = "EDIT_IMAGE_INVALID_ASPECT_RATIO"
     public_message = "The edited image does not have a valid 9:16 portrait ratio."
+
+
+class EditedImageMissingOrInvalidError(MediaError):
+    code = "EDITED_IMAGE_MISSING_OR_INVALID"
+    public_message = "The edited image is missing or invalid."
+
+
+class SourceVideoDownloadError(MediaError):
+    code = "SOURCE_VIDEO_DOWNLOAD_FAILED"
+    public_message = "Failed to download the source video."
+
+
+class SourceVideoTooLargeError(MediaError):
+    code = "SOURCE_VIDEO_TOO_LARGE"
+    public_message = "The source video exceeded the download size limit."
+
+
+class SourceVideoInvalidFileError(MediaError):
+    code = "SOURCE_VIDEO_INVALID_FILE"
+    public_message = "The source video file is invalid."
+
+
+class SourceVideoInvalidDurationError(MediaError):
+    code = "SOURCE_VIDEO_INVALID_DURATION"
+    public_message = "The source video duration is invalid."
+
+
+class SourceVideoInvalidDimensionsError(MediaError):
+    code = "SOURCE_VIDEO_INVALID_DIMENSIONS"
+    public_message = "The source video dimensions are invalid."
+
+
+class SourceVideoInvalidFrameRateError(MediaError):
+    code = "SOURCE_VIDEO_INVALID_FRAME_RATE"
+    public_message = "The source video frame rate is invalid."
+
+
+class FfprobeNotAvailableError(MediaError):
+    code = "FFPROBE_NOT_AVAILABLE"
+    public_message = "ffprobe is not available."
+
+
+class FfmpegNotAvailableError(MediaError):
+    code = "FFMPEG_NOT_AVAILABLE"
+    public_message = "ffmpeg is not available."
+
+
+class VideoNormalizationFailedError(MediaError):
+    code = "VIDEO_NORMALIZATION_FAILED"
+    public_message = "Failed to normalize the source video."

@@ -11,17 +11,22 @@ from app.api import settings as settings_api
 from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, init_db
 from app.logging_config import configure_logging, get_logger
+from app.providers.media_exceptions import (
+    SourceVideoDownloadError,
+    SourceVideoTooLargeError,
+)
 from app.providers.wavespeed import WaveSpeedProvider
 from app.providers.wavespeed_llm import WaveSpeedLLMProvider
 from app.services.base_image_generation import BaseImageGenerationService
 from app.services.character_edit_generation import CharacterEditGenerationService
-from app.services.image_download import ImageDownloader
+from app.services.image_download import ImageDownloader, SecureArtifactDownloader
 from app.services.job_recovery import recover_interrupted_jobs
 from app.services.prompt_generation import PromptGenerationService
 from app.services.reference_upload import (
     ReferenceUploadService,
     reconcile_waiting_for_reference_jobs,
 )
+from app.services.source_video_generation import SourceVideoGenerationService
 from app.services.storage import StorageService
 from app.services.task_runner import TaskRunner
 
@@ -71,9 +76,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="AI Fun Motion",
         description=(
             "Local personal-use AI video transformation "
-            "(Gate 4: reference upload and character edit)"
+            "(Gate 5: source motion video generation)"
         ),
-        version="0.4.0",
+        version="0.5.0",
         lifespan=lifespan,
     )
 
@@ -122,6 +127,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings=app_settings,
         downloader=downloader,
     )
+    video_downloader = SecureArtifactDownloader(
+        timeout_seconds=app_settings.source_video_download_timeout_seconds,
+        max_bytes=app_settings.source_video_max_download_bytes,
+        download_error_cls=SourceVideoDownloadError,
+        too_large_error_cls=SourceVideoTooLargeError,
+    )
+    source_video_generation = SourceVideoGenerationService(
+        session_factory=session_factory,
+        task_runner=task_runner,
+        media_provider=wavespeed,
+        storage=storage,
+        settings=app_settings,
+        downloader=video_downloader,
+    )
 
     app.state.settings = app_settings
     app.state.engine = engine
@@ -134,7 +153,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.base_image_generation = base_image_generation
     app.state.reference_upload = reference_upload
     app.state.character_edit_generation = character_edit_generation
+    app.state.source_video_generation = source_video_generation
     app.state.image_downloader = downloader
+    app.state.video_downloader = video_downloader
 
     app.include_router(health.router)
     app.include_router(jobs.router)

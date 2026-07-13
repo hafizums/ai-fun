@@ -1,4 +1,4 @@
-"""Secure HTTPS download of provider-generated image artifacts."""
+"""Secure HTTPS download of provider-generated artifacts."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import httpx
 from app.providers.media_exceptions import (
     BaseImageDownloadError,
     BaseImageTooLargeError,
+    MediaError,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,19 +26,23 @@ def redact_url_for_log(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
-class ImageDownloader:
-    """Stream an HTTPS image URL to a local path with size and redirect limits."""
+class SecureArtifactDownloader:
+    """Stream an HTTPS URL to a local path with size and redirect limits."""
 
     def __init__(
         self,
         *,
         timeout_seconds: float,
         max_bytes: int,
+        download_error_cls: type[MediaError],
+        too_large_error_cls: type[MediaError],
         transport: httpx.BaseTransport | None = None,
         client_factory: Callable[..., httpx.Client] | None = None,
     ) -> None:
         self._timeout = timeout_seconds
         self._max_bytes = max_bytes
+        self._download_error_cls = download_error_cls
+        self._too_large_error_cls = too_large_error_cls
         self._transport = transport
         self._client_factory = client_factory or httpx.Client
 
@@ -45,7 +50,7 @@ class ImageDownloader:
         """Download URL to destination. Returns bytes written. Cleans up on failure."""
         parsed = urlparse(url)
         if parsed.scheme.lower() != "https" or not parsed.netloc:
-            raise BaseImageDownloadError()
+            raise self._download_error_cls()
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
@@ -68,35 +73,37 @@ class ImageDownloader:
                         if response.is_redirect:
                             location = response.headers.get("location")
                             if not location:
-                                raise BaseImageDownloadError()
+                                raise self._download_error_cls()
                             next_url = str(httpx.URL(current).join(location))
                             next_parsed = urlparse(next_url)
                             if next_parsed.scheme.lower() != "https":
-                                raise BaseImageDownloadError()
+                                raise self._download_error_cls()
                             current = next_url
                             continue
                         if response.status_code >= 400:
-                            raise BaseImageDownloadError()
+                            raise self._download_error_cls()
                         with destination.open("wb") as handle:
                             for chunk in response.iter_bytes():
                                 if not chunk:
                                     continue
                                 written += len(chunk)
                                 if written > self._max_bytes:
-                                    raise BaseImageTooLargeError()
+                                    raise self._too_large_error_cls()
                                 handle.write(chunk)
+                        if written <= 0:
+                            raise self._download_error_cls()
                         return written
-                raise BaseImageDownloadError()
-        except (BaseImageDownloadError, BaseImageTooLargeError):
+                raise self._download_error_cls()
+        except MediaError:
             self._cleanup(destination)
             raise
         except Exception:
             logger.error(
-                "Image download failed exception_class=Unexpected url=%s",
+                "Artifact download failed exception_class=Unexpected url=%s",
                 redact_url_for_log(url),
             )
             self._cleanup(destination)
-            raise BaseImageDownloadError() from None
+            raise self._download_error_cls() from None
 
     @staticmethod
     def _cleanup(path: Path) -> None:
@@ -105,3 +112,24 @@ class ImageDownloader:
                 path.unlink()
         except OSError:
             logger.error("Failed to remove partial download path under storage root")
+
+
+class ImageDownloader(SecureArtifactDownloader):
+    """Image-oriented downloader preserving Gate 3/4 error codes."""
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float,
+        max_bytes: int,
+        transport: httpx.BaseTransport | None = None,
+        client_factory: Callable[..., httpx.Client] | None = None,
+    ) -> None:
+        super().__init__(
+            timeout_seconds=timeout_seconds,
+            max_bytes=max_bytes,
+            download_error_cls=BaseImageDownloadError,
+            too_large_error_cls=BaseImageTooLargeError,
+            transport=transport,
+            client_factory=client_factory,
+        )

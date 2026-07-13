@@ -6,6 +6,7 @@ import io
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -175,6 +176,8 @@ def install_fake_media(app: Any, fake: FakeMediaProvider) -> FakeMediaProvider:
     app.state.base_image_generation._media = fake
     if hasattr(app.state, "character_edit_generation"):
         app.state.character_edit_generation._media = fake
+    if hasattr(app.state, "source_video_generation"):
+        app.state.source_video_generation._media = fake
     return fake
 
 
@@ -195,6 +198,66 @@ def mock_image_transport(
         )
 
     return httpx.MockTransport(handler)
+
+
+def make_portrait_mp4_bytes(
+    *,
+    width: int = 480,
+    height: int = 854,
+    duration: float = 5.0,
+    fps: int = 24,
+) -> bytes:
+    """Generate a small portrait H.264 MP4 via local ffmpeg (offline fixture)."""
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "clip.mp4"
+        completed = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c=blue:s={width}x{height}:d={duration}:r={fps}",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            shell=False,
+        )
+        if completed.returncode != 0 or not path.is_file():
+            raise RuntimeError("ffmpeg fixture generation failed")
+        return path.read_bytes()
+
+
+def install_source_video_downloader(app: Any, body: bytes) -> None:
+    """Wire SecureArtifactDownloader returning body for Gate 5 worker downloads."""
+    from app.providers.media_exceptions import (
+        SourceVideoDownloadError,
+        SourceVideoTooLargeError,
+    )
+    from app.services.image_download import SecureArtifactDownloader
+
+    settings = app.state.settings
+    downloader = SecureArtifactDownloader(
+        timeout_seconds=settings.source_video_download_timeout_seconds,
+        max_bytes=settings.source_video_max_download_bytes,
+        download_error_cls=SourceVideoDownloadError,
+        too_large_error_cls=SourceVideoTooLargeError,
+        transport=mock_image_transport(body=body, content_type="video/mp4"),
+    )
+    app.state.video_downloader = downloader
+    app.state.source_video_generation._downloader = downloader
 
 
 def assert_https_only(url: str) -> None:

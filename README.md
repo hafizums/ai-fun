@@ -2,9 +2,9 @@
 
 Local personal-use AI video transformation application.
 
-**Gate 4** adds local reference-image upload and asynchronous character-only replacement via WaveSpeed’s GPT Image 2 Edit model. Gates 1–3 remain unchanged in behavior.
+**Gate 5** generates a five-second source motion video from the original Gate 3 base image using WaveSpeed Wan 2.2 I2V. Gates 1–4 remain unchanged in behavior.
 
-This gate does **not** generate video, detect transitions, merge clips, or ship a frontend.
+This gate does **not** run Fun Control, detect transitions, merge clips, or ship a frontend.
 
 ## Requirements
 
@@ -40,48 +40,49 @@ Binds to `127.0.0.1` only. Docs: http://127.0.0.1:8000/docs
 
 ## Configuration
 
-See `.env.example`. Gate 4 additions:
+See `.env.example`. Gate 5 additions:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `WAVESPEED_CHARACTER_EDIT_MODEL` | `openai/gpt-image-2/edit` | Fixed edit model (config only) |
-| `WAVESPEED_CHARACTER_EDIT_ASPECT_RATIO` | `9:16` | Fixed aspect ratio |
-| `WAVESPEED_CHARACTER_EDIT_RESOLUTION` | `1k` | Fixed resolution |
-| `WAVESPEED_CHARACTER_EDIT_QUALITY` | `medium` | Fixed quality |
-| `WAVESPEED_CHARACTER_EDIT_OUTPUT_FORMAT` | `png` | Fixed output format |
-| `REFERENCE_IMAGE_MAX_UPLOAD_MB` | `15` | Streaming upload byte cap |
-| `REFERENCE_IMAGE_MAX_PIXELS` | `25000000` | Max reference pixels |
-| `REFERENCE_IMAGE_MIN_WIDTH` / `MIN_HEIGHT` | `256` | Minimum reference dimensions |
+| `WAVESPEED_SOURCE_VIDEO_MODEL` | `wavespeed-ai/wan-2.2/i2v-480p-ultra-fast` | Fixed I2V model |
+| `WAVESPEED_SOURCE_VIDEO_DURATION_SECONDS` | `5` | Duration (`5` or `8`; MVP uses `5`) |
+| `WAVESPEED_SOURCE_VIDEO_SEED` | `-1` | `-1` = provider-random; non-negative = fixed |
+| `SOURCE_VIDEO_DOWNLOAD_TIMEOUT_SECONDS` | `300` | HTTPS download timeout |
+| `SOURCE_VIDEO_MAX_DOWNLOAD_MB` | `100` | Streaming byte cap |
+| `SOURCE_VIDEO_MIN/MAX_DURATION_SECONDS` | `4` / `7` | Accepted duration bounds |
+| `SOURCE_VIDEO_DURATION_TOLERANCE_SECONDS` | `0.35` | Must be near target duration |
+| `SOURCE_VIDEO_MIN_WIDTH` / `MIN_HEIGHT` | `240` / `400` | Minimum portrait dimensions |
+| `SOURCE_VIDEO_MAX_PIXELS` | `5000000` | Max width×height |
+| `SOURCE_VIDEO_MAX_FPS` | `60` | Maximum frame rate |
 
-Media upload/edit use `WAVESPEED_API_BASE_URL` only — never the LLM base URL.
+I2V uses `WAVESPEED_API_BASE_URL` only — never the LLM base URL. No model parameters are accepted from request bodies.
 
-## API (Gate 4)
+## API (Gate 5)
 
 | Method | Path | Behavior |
 |--------|------|----------|
-| `POST` | `/api/jobs/{id}/reference-image` | Multipart `file` upload → `REFERENCE_READY` |
-| `GET` | `/api/jobs/{id}/reference-image` | Reference metadata |
-| `GET` | `/api/jobs/{id}/reference-image/file` | Local normalized PNG |
-| `POST` | `/api/jobs/{id}/generate-character-edit` | Accept async edit (`202`) |
-| `GET` | `/api/jobs/{id}/edited-image` | Edited metadata when ready |
-| `GET` | `/api/jobs/{id}/edited-image/file` | Local edited PNG |
+| `POST` | `/api/jobs/{id}/generate-source-video` | Accept async I2V (`202`) |
+| `GET` | `/api/jobs/{id}/source-video` | Local metadata when ready |
+| `GET` | `/api/jobs/{id}/source-video/file` | Local MP4 (`video/mp4`) |
 
 ### Workflow
 
-`BASE_IMAGE_READY` → upload reference → `WAITING_FOR_REFERENCE` → `REFERENCE_READY` → `POST .../generate-character-edit` → `CHARACTER_EDITING` → `CHARACTER_EDIT_READY`
+`CHARACTER_EDIT_READY` → `POST .../generate-source-video` → `SOURCE_VIDEO_GENERATING` → `SOURCE_VIDEO_READY`
 
-Eligible edit failures (`failed_stage == character_editing`) may retry via the same generate endpoint.
+Eligible source failures (`failed_stage == source_video_generation`) may retry via the same generate endpoint.
+
+**Source image:** only `storage/generated/{job_id}/base_image.png` is uploaded and animated. `edited_image.png` is validated as Gate 4 integrity proof and is never used as I2V input.
 
 Storage:
 
-- Reference: `storage/uploads/{job_id}/reference_image.png`
-- Edited: `storage/generated/{job_id}/edited_image.png`
+- Final: `storage/generated/{job_id}/source_video.mp4`
+- Partials: `source_video.download`, `source_video.source` (removed on success/failure)
 
 ## Architecture notes
 
-- **Task runner**: in-process `ThreadPoolExecutor`. Restart marks `CHARACTER_EDITING` (and other active states) failed; idle states including `WAITING_FOR_REFERENCE`, `REFERENCE_READY`, and `CHARACTER_EDIT_READY` are preserved.
-- **Edit flow**: upload base + reference via public `Client.upload`, one `Client.run` on `openai/gpt-image-2/edit` with `images: [base, reference]`.
-- **No LLM** during reference upload or character edit.
+- **Task runner**: in-process `ThreadPoolExecutor`. Restart marks `SOURCE_VIDEO_GENERATING` (and other active states) failed; idle `SOURCE_VIDEO_READY` is preserved and deletable.
+- **I2V flow**: upload original base image once via public `Client.upload`, one `Client.run` on Wan 2.2 I2V with verified schema fields.
+- **No LLM**, no character-edit call, and no Fun Control during source-video generation.
 
 ## Tests
 
