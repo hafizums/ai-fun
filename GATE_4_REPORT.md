@@ -172,6 +172,6 @@ Atomic upload claim, backup/rollback publication, DB commit after file publish, 
 ## Git information
 
 - Implementation commit: `c9788ad146e87429ab66ca0198092a51ce327d06`
-- Correction commit: *(filled after commit)*
+- Correction commit: `96c41c865f843434bab25cc859fd49cdf2e0fd24`
 - Final HEAD: _(docs follow-up may trail)_
 - Final Git status: clean working tree on `master` after Gate 4 correction
