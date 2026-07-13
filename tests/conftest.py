@@ -68,6 +68,22 @@ def tmp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("SOURCE_VIDEO_MIN_HEIGHT", "400")
     monkeypatch.setenv("SOURCE_VIDEO_MAX_PIXELS", "5000000")
     monkeypatch.setenv("SOURCE_VIDEO_MAX_FPS", "60")
+    monkeypatch.setenv(
+        "WAVESPEED_CONTROL_VIDEO_MODEL",
+        "wavespeed-ai/wan-2.2/fun-control",
+    )
+    monkeypatch.setenv("WAVESPEED_CONTROL_VIDEO_DURATION_SECONDS", "5")
+    monkeypatch.setenv("WAVESPEED_CONTROL_VIDEO_RESOLUTION", "480p")
+    monkeypatch.setenv("WAVESPEED_CONTROL_VIDEO_SEED", "-1")
+    monkeypatch.setenv("CONTROL_VIDEO_DOWNLOAD_TIMEOUT_SECONDS", "300")
+    monkeypatch.setenv("CONTROL_VIDEO_MAX_DOWNLOAD_MB", "150")
+    monkeypatch.setenv("CONTROL_VIDEO_MAX_DURATION_SECONDS", "7")
+    monkeypatch.setenv("CONTROL_VIDEO_MIN_DURATION_SECONDS", "4")
+    monkeypatch.setenv("CONTROL_VIDEO_DURATION_TOLERANCE_SECONDS", "0.35")
+    monkeypatch.setenv("CONTROL_VIDEO_MIN_WIDTH", "240")
+    monkeypatch.setenv("CONTROL_VIDEO_MIN_HEIGHT", "400")
+    monkeypatch.setenv("CONTROL_VIDEO_MAX_PIXELS", "5000000")
+    monkeypatch.setenv("CONTROL_VIDEO_MAX_FPS", "60")
     monkeypatch.setenv("LOCAL_TASK_WORKERS", "1")
     monkeypatch.setenv("FFMPEG_BINARY", "ffmpeg")
     monkeypatch.setenv("FFPROBE_BINARY", "ffprobe")

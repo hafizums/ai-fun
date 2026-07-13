@@ -11,7 +11,12 @@ from fractions import Fraction
 from pathlib import Path
 
 from app.providers.media_exceptions import (
+    ControlVideoInvalidDimensionsError,
+    ControlVideoInvalidDurationError,
+    ControlVideoInvalidFileError,
+    ControlVideoInvalidFrameRateError,
     FfprobeNotAvailableError,
+    MediaError,
     SourceVideoInvalidDimensionsError,
     SourceVideoInvalidDurationError,
     SourceVideoInvalidFileError,
@@ -36,22 +41,50 @@ class VideoMetadata:
     has_audio: bool
 
 
-def _parse_fps(rate: object) -> float:
+@dataclass(frozen=True)
+class VideoValidationErrors:
+    invalid_file: type[MediaError]
+    invalid_dimensions: type[MediaError]
+    invalid_duration: type[MediaError]
+    invalid_frame_rate: type[MediaError]
+
+
+SOURCE_VIDEO_ERRORS = VideoValidationErrors(
+    invalid_file=SourceVideoInvalidFileError,
+    invalid_dimensions=SourceVideoInvalidDimensionsError,
+    invalid_duration=SourceVideoInvalidDurationError,
+    invalid_frame_rate=SourceVideoInvalidFrameRateError,
+)
+
+CONTROL_VIDEO_ERRORS = VideoValidationErrors(
+    invalid_file=ControlVideoInvalidFileError,
+    invalid_dimensions=ControlVideoInvalidDimensionsError,
+    invalid_duration=ControlVideoInvalidDurationError,
+    invalid_frame_rate=ControlVideoInvalidFrameRateError,
+)
+
+
+def _parse_fps(rate: object, *, errors: VideoValidationErrors) -> float:
     if rate is None:
-        raise SourceVideoInvalidFrameRateError()
+        raise errors.invalid_frame_rate()
     text = str(rate).strip()
     if not text or text in {"0/0", "N/A"}:
-        raise SourceVideoInvalidFrameRateError()
+        raise errors.invalid_frame_rate()
     try:
         value = float(Fraction(text))
     except (ValueError, ZeroDivisionError) as exc:
-        raise SourceVideoInvalidFrameRateError() from exc
+        raise errors.invalid_frame_rate() from exc
     if not math.isfinite(value) or value <= 0:
-        raise SourceVideoInvalidFrameRateError()
+        raise errors.invalid_frame_rate()
     return value
 
 
-def probe_video(path: Path, *, ffprobe_binary: str) -> dict:
+def probe_video(
+    path: Path,
+    *,
+    ffprobe_binary: str,
+    invalid_file_cls: type[MediaError] = SourceVideoInvalidFileError,
+) -> dict:
     """Run ffprobe and return parsed JSON. Never logs stderr contents."""
     check = detect_binary(ffprobe_binary, label="ffprobe")
     if not check.available or not check.resolved_path:
@@ -75,18 +108,18 @@ def probe_video(path: Path, *, ffprobe_binary: str) -> dict:
             shell=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise SourceVideoInvalidFileError() from exc
+        raise invalid_file_cls() from exc
     except OSError as exc:
         raise FfprobeNotAvailableError() from exc
     if completed.returncode != 0:
-        raise SourceVideoInvalidFileError()
+        raise invalid_file_cls()
     try:
         return json.loads(completed.stdout or "")
     except json.JSONDecodeError as exc:
-        raise SourceVideoInvalidFileError() from exc
+        raise invalid_file_cls() from exc
 
 
-def validate_source_video_probe(
+def validate_video_probe(
     path: Path,
     *,
     ffprobe_binary: str,
@@ -98,29 +131,37 @@ def validate_source_video_probe(
     min_height: int,
     max_pixels: int,
     max_fps: float,
+    errors: VideoValidationErrors,
 ) -> VideoMetadata:
-    """Validate a local video file for Gate 5 source-video acceptance."""
+    """Validate a local portrait video against configured Gate bounds."""
     if not path.is_file() or path.stat().st_size <= 0:
-        raise SourceVideoInvalidFileError()
+        raise errors.invalid_file()
 
-    data = probe_video(path, ffprobe_binary=ffprobe_binary)
+    data = probe_video(
+        path,
+        ffprobe_binary=ffprobe_binary,
+        invalid_file_cls=errors.invalid_file,
+    )
     streams = data.get("streams") or []
     if not isinstance(streams, list):
-        raise SourceVideoInvalidFileError()
+        raise errors.invalid_file()
 
-    video_streams = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"]
-    audio_streams = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"]
+    video_streams = [
+        s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"
+    ]
+    audio_streams = [
+        s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"
+    ]
     if len(video_streams) != 1:
-        raise SourceVideoInvalidFileError()
+        raise errors.invalid_file()
     video = video_streams[0]
 
     try:
         width = int(video.get("width") or 0)
         height = int(video.get("height") or 0)
     except (TypeError, ValueError) as exc:
-        raise SourceVideoInvalidDimensionsError() from exc
+        raise errors.invalid_dimensions() from exc
 
-    # Interpret rotation metadata for displayed dimensions.
     rotation = 0
     try:
         tags = video.get("tags") or {}
@@ -137,35 +178,37 @@ def validate_source_video_probe(
         width, height = height, width
 
     if width <= 0 or height <= 0:
-        raise SourceVideoInvalidDimensionsError()
+        raise errors.invalid_dimensions()
     if width < min_width or height < min_height:
-        raise SourceVideoInvalidDimensionsError()
+        raise errors.invalid_dimensions()
     if height <= width:
-        raise SourceVideoInvalidDimensionsError()
+        raise errors.invalid_dimensions()
     if width * height > max_pixels:
-        raise SourceVideoInvalidDimensionsError()
+        raise errors.invalid_dimensions()
 
     format_info = data.get("format") if isinstance(data.get("format"), dict) else {}
     duration_raw = video.get("duration") or format_info.get("duration")
     try:
         duration = float(duration_raw)
     except (TypeError, ValueError) as exc:
-        raise SourceVideoInvalidDurationError() from exc
+        raise errors.invalid_duration() from exc
     if not math.isfinite(duration) or duration <= 0:
-        raise SourceVideoInvalidDurationError()
+        raise errors.invalid_duration()
     if duration < min_duration or duration > max_duration:
-        raise SourceVideoInvalidDurationError()
+        raise errors.invalid_duration()
     if abs(duration - target_duration) > duration_tolerance:
-        raise SourceVideoInvalidDurationError()
+        raise errors.invalid_duration()
 
-    fps = _parse_fps(video.get("avg_frame_rate") or video.get("r_frame_rate"))
+    fps = _parse_fps(
+        video.get("avg_frame_rate") or video.get("r_frame_rate"),
+        errors=errors,
+    )
     if fps > max_fps:
-        raise SourceVideoInvalidFrameRateError()
+        raise errors.invalid_frame_rate()
 
     codec = str(video.get("codec_name") or "unknown")
     container = str(format_info.get("format_name") or path.suffix.lstrip(".") or "unknown")
     if "," in container:
-        # Prefer mp4 if listed among format names.
         names = {part.strip().lower() for part in container.split(",")}
         container = "mp4" if "mp4" in names else next(iter(names))
 
@@ -178,4 +221,62 @@ def validate_source_video_probe(
         container=container,
         size_bytes=path.stat().st_size,
         has_audio=len(audio_streams) > 0,
+    )
+
+
+def validate_source_video_probe(
+    path: Path,
+    *,
+    ffprobe_binary: str,
+    target_duration: float,
+    min_duration: float,
+    max_duration: float,
+    duration_tolerance: float,
+    min_width: int,
+    min_height: int,
+    max_pixels: int,
+    max_fps: float,
+) -> VideoMetadata:
+    """Validate a Gate 5 source video (SourceVideo* error codes)."""
+    return validate_video_probe(
+        path,
+        ffprobe_binary=ffprobe_binary,
+        target_duration=target_duration,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        duration_tolerance=duration_tolerance,
+        min_width=min_width,
+        min_height=min_height,
+        max_pixels=max_pixels,
+        max_fps=max_fps,
+        errors=SOURCE_VIDEO_ERRORS,
+    )
+
+
+def validate_control_video_probe(
+    path: Path,
+    *,
+    ffprobe_binary: str,
+    target_duration: float,
+    min_duration: float,
+    max_duration: float,
+    duration_tolerance: float,
+    min_width: int,
+    min_height: int,
+    max_pixels: int,
+    max_fps: float,
+) -> VideoMetadata:
+    """Validate a Gate 6 controlled video (ControlVideo* error codes)."""
+    return validate_video_probe(
+        path,
+        ffprobe_binary=ffprobe_binary,
+        target_duration=target_duration,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        duration_tolerance=duration_tolerance,
+        min_width=min_width,
+        min_height=min_height,
+        max_pixels=max_pixels,
+        max_fps=max_fps,
+        errors=CONTROL_VIDEO_ERRORS,
     )

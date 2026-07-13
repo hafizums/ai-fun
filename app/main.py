@@ -12,6 +12,8 @@ from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, init_db
 from app.logging_config import configure_logging, get_logger
 from app.providers.media_exceptions import (
+    ControlVideoDownloadError,
+    ControlVideoTooLargeError,
     SourceVideoDownloadError,
     SourceVideoTooLargeError,
 )
@@ -19,6 +21,7 @@ from app.providers.wavespeed import WaveSpeedProvider
 from app.providers.wavespeed_llm import WaveSpeedLLMProvider
 from app.services.base_image_generation import BaseImageGenerationService
 from app.services.character_edit_generation import CharacterEditGenerationService
+from app.services.control_video_generation import ControlVideoGenerationService
 from app.services.image_download import ImageDownloader, SecureArtifactDownloader
 from app.services.job_recovery import recover_interrupted_jobs
 from app.services.prompt_generation import PromptGenerationService
@@ -76,9 +79,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="AI Fun Motion",
         description=(
             "Local personal-use AI video transformation "
-            "(Gate 5: source motion video generation)"
+            "(Gate 6: Fun Control motion transfer)"
         ),
-        version="0.5.0",
+        version="0.6.0",
         lifespan=lifespan,
     )
 
@@ -141,6 +144,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings=app_settings,
         downloader=video_downloader,
     )
+    control_video_downloader = SecureArtifactDownloader(
+        timeout_seconds=app_settings.control_video_download_timeout_seconds,
+        max_bytes=app_settings.control_video_max_download_bytes,
+        download_error_cls=ControlVideoDownloadError,
+        too_large_error_cls=ControlVideoTooLargeError,
+    )
+    control_video_generation = ControlVideoGenerationService(
+        session_factory=session_factory,
+        task_runner=task_runner,
+        media_provider=wavespeed,
+        storage=storage,
+        settings=app_settings,
+        downloader=control_video_downloader,
+    )
 
     app.state.settings = app_settings
     app.state.engine = engine
@@ -154,8 +171,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.reference_upload = reference_upload
     app.state.character_edit_generation = character_edit_generation
     app.state.source_video_generation = source_video_generation
+    app.state.control_video_generation = control_video_generation
     app.state.image_downloader = downloader
     app.state.video_downloader = video_downloader
+    app.state.control_video_downloader = control_video_downloader
 
     app.include_router(health.router)
     app.include_router(jobs.router)

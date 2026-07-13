@@ -1,4 +1,4 @@
-﻿"""Job CRUD, prompt-generation, base-image, reference, character-edit, and source-video APIs."""
+﻿"""Job CRUD and generation stage APIs (prompts through controlled video)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,10 @@ from app.providers.llm_exceptions import LLMInvalidResponseError
 from app.providers.media_exceptions import (
     BaseImageInvalidAspectRatioError,
     BaseImageInvalidFileError,
+    ControlVideoInvalidDimensionsError,
+    ControlVideoInvalidDurationError,
+    ControlVideoInvalidFileError,
+    ControlVideoInvalidFrameRateError,
     EditImageInvalidAspectRatioError,
     EditImageInvalidFileError,
     MediaError,
@@ -31,6 +35,10 @@ from app.schemas.character_edit import (
     GenerateCharacterEditAcceptedResponse,
     ReferenceImageMetadataResponse,
 )
+from app.schemas.controlled_video import (
+    ControlledVideoMetadataResponse,
+    GenerateControlledVideoAcceptedResponse,
+)
 from app.schemas.job import DeleteResponse, JobListResponse, JobResponse
 from app.schemas.prompt_api import GeneratePromptsAcceptedResponse, PromptEnvelopeResponse
 from app.schemas.prompts import PromptGenerationRequest
@@ -42,6 +50,10 @@ from app.services.base_image_generation import BASE_IMAGE_FILENAME, local_base_i
 from app.services.character_edit_generation import (
     EDITED_IMAGE_FILENAME,
     local_edited_image_url,
+)
+from app.services.control_video_generation import (
+    CONTROL_VIDEO_FILENAME,
+    local_controlled_video_url,
 )
 from app.services.image_normalize import (
     inspect_edited_png,
@@ -536,6 +548,107 @@ def get_source_video_file(job_id: str, request: Request) -> FileResponse:
         )
 
 
+@router.post(
+    "/{job_id}/generate-controlled-video",
+    response_model=GenerateControlledVideoAcceptedResponse,
+    status_code=202,
+)
+def generate_controlled_video(
+    job_id: str,
+    request: Request,
+) -> GenerateControlledVideoAcceptedResponse:
+    """Accept async Fun Control generation (no provider call in this request)."""
+    service = request.app.state.control_video_generation
+    try:
+        job = service.accept_generation(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return GenerateControlledVideoAcceptedResponse(
+        id=job.id,
+        status=job.status.value,
+        current_stage=job.current_stage,
+        progress_percent=job.progress_percent,
+    )
+
+
+@router.get("/{job_id}/controlled-video", response_model=ControlledVideoMetadataResponse)
+def get_controlled_video_metadata(
+    job_id: str, request: Request
+) -> ControlledVideoMetadataResponse:
+    service = request.app.state.control_video_generation
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.CONTROL_VIDEO_READY:
+            raise HTTPException(status_code=409, detail="Controlled video is not ready")
+        try:
+            info = service.inspect_ready_video(job_id)
+        except (
+            ControlVideoInvalidFileError,
+            ControlVideoInvalidDurationError,
+            ControlVideoInvalidDimensionsError,
+            ControlVideoInvalidFrameRateError,
+            MediaError,
+        ) as exc:
+            logger.error("CONTROL_VIDEO_READY job_id=%s local file invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored controlled video is missing or invalid",
+            ) from exc
+        return ControlledVideoMetadataResponse(
+            job_id=job_id,
+            status=job.status.value,
+            url=job.controlled_video_url or local_controlled_video_url(job_id),
+            width=info.width,
+            height=info.height,
+            duration_seconds=info.duration_seconds,
+            fps=info.fps,
+            codec=info.codec,
+            container="mp4",
+            size_bytes=info.size_bytes,
+            has_audio=info.has_audio,
+        )
+
+
+@router.get("/{job_id}/controlled-video/file")
+def get_controlled_video_file(job_id: str, request: Request) -> FileResponse:
+    service = request.app.state.control_video_generation
+    storage = request.app.state.storage
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.CONTROL_VIDEO_READY:
+            raise HTTPException(status_code=409, detail="Controlled video is not ready")
+        path = storage.job_directory(job_id, create=False) / CONTROL_VIDEO_FILENAME
+        try:
+            service.inspect_ready_video(job_id)
+        except (
+            ControlVideoInvalidFileError,
+            ControlVideoInvalidDurationError,
+            ControlVideoInvalidDimensionsError,
+            ControlVideoInvalidFrameRateError,
+            MediaError,
+        ) as exc:
+            logger.error("CONTROL_VIDEO_READY job_id=%s file serve invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored controlled video is missing or invalid",
+            ) from exc
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            filename=f"controlled-video-{job_id}.mp4",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job(job_id: str, request: Request) -> JobResponse:
     with request.app.state.session_factory() as session:
@@ -559,8 +672,8 @@ def delete_job(job_id: str, request: Request) -> DeleteResponse:
                 detail=(
                     f"Cannot delete job in active status {job.status.value}. "
                     "Only DRAFT, PROMPT_READY, BASE_IMAGE_READY, REFERENCE_READY, "
-                    "CHARACTER_EDIT_READY, SOURCE_VIDEO_READY, COMPLETED, or FAILED "
-                    "jobs may be deleted."
+                    "CHARACTER_EDIT_READY, SOURCE_VIDEO_READY, CONTROL_VIDEO_READY, "
+                    "COMPLETED, or FAILED jobs may be deleted."
                 ),
             )
         try:

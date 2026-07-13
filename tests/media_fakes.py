@@ -180,6 +180,8 @@ def install_fake_media(app: Any, fake: FakeMediaProvider) -> FakeMediaProvider:
         app.state.character_edit_generation._media = fake
     if hasattr(app.state, "source_video_generation"):
         app.state.source_video_generation._media = fake
+    if hasattr(app.state, "control_video_generation"):
+        app.state.control_video_generation._media = fake
     return fake
 
 
@@ -260,6 +262,26 @@ def install_source_video_downloader(app: Any, body: bytes) -> None:
     )
     app.state.video_downloader = downloader
     app.state.source_video_generation._downloader = downloader
+
+
+def install_control_video_downloader(app: Any, body: bytes) -> None:
+    """Wire SecureArtifactDownloader returning body for Gate 6 worker downloads."""
+    from app.providers.media_exceptions import (
+        ControlVideoDownloadError,
+        ControlVideoTooLargeError,
+    )
+    from app.services.image_download import SecureArtifactDownloader
+
+    settings = app.state.settings
+    downloader = SecureArtifactDownloader(
+        timeout_seconds=settings.control_video_download_timeout_seconds,
+        max_bytes=settings.control_video_max_download_bytes,
+        download_error_cls=ControlVideoDownloadError,
+        too_large_error_cls=ControlVideoTooLargeError,
+        transport=mock_image_transport(body=body, content_type="video/mp4"),
+    )
+    app.state.control_video_downloader = downloader
+    app.state.control_video_generation._downloader = downloader
 
 
 def assert_https_only(url: str) -> None:

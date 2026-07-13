@@ -565,7 +565,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     path = tmp_path / "x.mp4"
     path.write_bytes(b"not-really")
 
-    def landscape(path, *, ffprobe_binary):
+    def landscape(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {
@@ -584,7 +584,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidDimensionsError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def zero_dims(path, *, ffprobe_binary):
+    def zero_dims(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {
@@ -602,7 +602,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidDimensionsError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def huge_pixels(path, *, ffprobe_binary):
+    def huge_pixels(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {
@@ -620,7 +620,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidDimensionsError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def short_dur(path, *, ffprobe_binary):
+    def short_dur(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {
@@ -638,7 +638,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidDurationError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def long_dur(path, *, ffprobe_binary):
+    def long_dur(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {
@@ -656,7 +656,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidDurationError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def nan_dur(path, *, ffprobe_binary):
+    def nan_dur(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {
@@ -674,7 +674,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidDurationError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def audio_only(path, *, ffprobe_binary):
+    def audio_only(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [{"codec_type": "audio", "codec_name": "aac"}],
             "format": {"duration": "5.0"},
@@ -684,14 +684,14 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidFileError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def no_video(path, *, ffprobe_binary):
+    def no_video(path, *, ffprobe_binary, invalid_file_cls=None):
         return {"streams": [], "format": {"duration": "5.0"}}
 
     monkeypatch.setattr("app.services.video_probe.probe_video", no_video)
     with pytest.raises(SourceVideoInvalidFileError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def high_fps(path, *, ffprobe_binary):
+    def high_fps(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {
@@ -709,7 +709,7 @@ def test_validate_rejects_bad_dimensions_duration_fps(tmp_path, monkeypatch) -> 
     with pytest.raises(SourceVideoInvalidFrameRateError):
         validate_source_video_probe(path, **_probe_kwargs())
 
-    def bad_fps(path, *, ffprobe_binary):
+    def bad_fps(path, *, ffprobe_binary, invalid_file_cls=None):
         return {
             "streams": [
                 {

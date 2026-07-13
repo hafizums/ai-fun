@@ -134,6 +134,11 @@ class EditedImageMissingOrInvalidError(MediaError):
     public_message = "The edited image is missing or invalid."
 
 
+class SourceVideoMissingOrInvalidError(MediaError):
+    code = "SOURCE_VIDEO_MISSING_OR_INVALID"
+    public_message = "The source video is missing or invalid."
+
+
 class SourceVideoDownloadError(MediaError):
     code = "SOURCE_VIDEO_DOWNLOAD_FAILED"
     public_message = "Failed to download the source video."
@@ -177,3 +182,33 @@ class FfmpegNotAvailableError(MediaError):
 class VideoNormalizationFailedError(MediaError):
     code = "VIDEO_NORMALIZATION_FAILED"
     public_message = "Failed to normalize the source video."
+
+
+class ControlVideoDownloadError(MediaError):
+    code = "CONTROL_VIDEO_DOWNLOAD_FAILED"
+    public_message = "Failed to download the controlled video."
+
+
+class ControlVideoTooLargeError(MediaError):
+    code = "CONTROL_VIDEO_TOO_LARGE"
+    public_message = "The controlled video exceeded the download size limit."
+
+
+class ControlVideoInvalidFileError(MediaError):
+    code = "CONTROL_VIDEO_INVALID_FILE"
+    public_message = "The controlled video file is invalid."
+
+
+class ControlVideoInvalidDurationError(MediaError):
+    code = "CONTROL_VIDEO_INVALID_DURATION"
+    public_message = "The controlled video duration is invalid."
+
+
+class ControlVideoInvalidDimensionsError(MediaError):
+    code = "CONTROL_VIDEO_INVALID_DIMENSIONS"
+    public_message = "The controlled video dimensions are invalid."
+
+
+class ControlVideoInvalidFrameRateError(MediaError):
+    code = "CONTROL_VIDEO_INVALID_FRAME_RATE"
+    public_message = "The controlled video frame rate is invalid."

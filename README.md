@@ -2,15 +2,16 @@
 
 Local personal-use AI video transformation application.
 
-**Gate 5** generates a five-second source motion video from the original Gate 3 base image using WaveSpeed Wan 2.2 I2V. Gates 1–4 remain unchanged in behavior.
+**Gate 6** transfers Gate 5 source motion onto the Gate 4 edited character via WaveSpeed Wan 2.2 Fun Control. Gates 1–5 remain unchanged in behavior.
 
-This gate does **not** run Fun Control, detect transitions, merge clips, or ship a frontend.
+This gate does **not** detect transitions, merge clips, or ship a frontend.
 
 ## Requirements
 
 - Python 3.11+
 - FFmpeg and ffprobe on `PATH` (or set `FFMPEG_BINARY` / `FFPROBE_BINARY`)
 - Optional: WaveSpeed API key for live media/LLM smoke tests ([access key](https://wavespeed.ai/accesskey))
+- WaveSpeed SDK: `wavespeed>=1.0.9,<1.1`
 
 ## PowerShell setup
 
@@ -40,50 +41,37 @@ Binds to `127.0.0.1` only. Docs: http://127.0.0.1:8000/docs
 
 ## Configuration
 
-See `.env.example`. Gate 5 additions:
+See `.env.example`. Gate 6 additions:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `WAVESPEED_SOURCE_VIDEO_MODEL` | `wavespeed-ai/wan-2.2/i2v-480p-ultra-fast` | Fixed I2V model |
-| `WAVESPEED_SOURCE_VIDEO_DURATION_SECONDS` | `5` | Duration (`5` or `8`; MVP uses `5`) |
-| `WAVESPEED_SOURCE_VIDEO_SEED` | `-1` | `-1` = provider-random; non-negative = fixed |
-| `SOURCE_VIDEO_DOWNLOAD_TIMEOUT_SECONDS` | `300` | HTTPS download timeout |
-| `SOURCE_VIDEO_MAX_DOWNLOAD_MB` | `100` | Streaming byte cap |
-| `SOURCE_VIDEO_MIN/MAX_DURATION_SECONDS` | `4` / `7` | Accepted duration bounds |
-| `SOURCE_VIDEO_DURATION_TOLERANCE_SECONDS` | `0.35` | Must be near target duration |
-| `SOURCE_VIDEO_MIN_WIDTH` / `MIN_HEIGHT` | `240` / `400` | Minimum portrait dimensions |
-| `SOURCE_VIDEO_MAX_PIXELS` | `5000000` | Max width×height |
-| `SOURCE_VIDEO_MAX_FPS` | `60` | Maximum frame rate |
+| `WAVESPEED_CONTROL_VIDEO_MODEL` | `wavespeed-ai/wan-2.2/fun-control` | Fixed Fun Control model |
+| `WAVESPEED_CONTROL_VIDEO_DURATION_SECONDS` | `5` | Local validation target only (schema has no duration field) |
+| `WAVESPEED_CONTROL_VIDEO_RESOLUTION` | `480p` | Model `resolution` (`480p` or `720p`) |
+| `WAVESPEED_CONTROL_VIDEO_SEED` | `-1` | `-1` = provider-random |
+| `CONTROL_VIDEO_*` download/validation bounds | see `.env.example` | Download and ffprobe limits |
 
-I2V uses `WAVESPEED_API_BASE_URL` only — never the LLM base URL. No model parameters are accepted from request bodies.
+Uses `WAVESPEED_API_BASE_URL` only. No model parameters from request bodies.
 
-## API (Gate 5)
+## API (Gate 6)
 
 | Method | Path | Behavior |
 |--------|------|----------|
-| `POST` | `/api/jobs/{id}/generate-source-video` | Accept async I2V (`202`) |
-| `GET` | `/api/jobs/{id}/source-video` | Local metadata when ready |
-| `GET` | `/api/jobs/{id}/source-video/file` | Local MP4 (`video/mp4`) |
+| `POST` | `/api/jobs/{id}/generate-controlled-video` | Accept async Fun Control (`202`) |
+| `GET` | `/api/jobs/{id}/controlled-video` | Local metadata when ready |
+| `GET` | `/api/jobs/{id}/controlled-video/file` | Local MP4 (`video/mp4`) |
 
 ### Workflow
 
-`CHARACTER_EDIT_READY` → `POST .../generate-source-video` → `SOURCE_VIDEO_GENERATING` → `SOURCE_VIDEO_READY`
+`SOURCE_VIDEO_READY` → `POST .../generate-controlled-video` → `CONTROL_VIDEO_GENERATING` → `CONTROL_VIDEO_READY`
 
-Eligible source failures (`failed_stage == source_video_generation`) may retry via the same generate endpoint.
-
-**Source image:** only `storage/generated/{job_id}/base_image.png` is uploaded and animated. `edited_image.png` is validated as Gate 4 integrity proof and is never used as I2V input.
-
-Storage:
-
-- Final: `storage/generated/{job_id}/source_video.mp4`
-- Partials: `source_video.download`, `source_video.source` (removed on success/failure)
+**Inputs:** `edited_image.png` (identity) + `source_video.mp4` (motion). Base/reference images are never uploaded.
 
 ## Architecture notes
 
-- **Task runner**: in-process `ThreadPoolExecutor`. Restart marks `SOURCE_VIDEO_GENERATING` (and other active states) failed; idle `SOURCE_VIDEO_READY` is preserved and deletable.
-- **I2V flow**: upload original base image once via public `Client.upload`, one `Client.run` on Wan 2.2 I2V with verified schema fields.
-- **Paid generation retries**: WaveSpeed dependency pinned to `wavespeed>=1.0.9,<1.1`. Generation uses a dedicated SDK client with `max_retries=0` and `max_connection_retries=0`, and `run_model` always passes `max_retries=0`. Upload uses a separate client that may keep SDK connection-retry defaults. Timeout/connection loss fails the stage without resubmitting; user retries via the stage endpoint are explicit new attempts.
-- **No LLM**, no character-edit call, and no Fun Control during source-video generation.
+- **Paid generation retries:** dedicated generation client with `max_retries=0` and `max_connection_retries=0`; `run_model` always passes `max_task_retries=0`.
+- **Uploads:** edited image first, source video second; one Fun Control `run`.
+- **No LLM**, no base-image, edit, or I2V call during this stage.
 
 ## Tests
 

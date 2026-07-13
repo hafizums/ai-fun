@@ -192,6 +192,60 @@ class Settings(BaseSettings):
         alias="SOURCE_VIDEO_MAX_FPS",
     )
 
+    wavespeed_control_video_model: str = Field(
+        default="wavespeed-ai/wan-2.2/fun-control",
+        alias="WAVESPEED_CONTROL_VIDEO_MODEL",
+    )
+    # Local validation target only — Fun Control schema has no duration field.
+    wavespeed_control_video_duration_seconds: int = Field(
+        default=5,
+        alias="WAVESPEED_CONTROL_VIDEO_DURATION_SECONDS",
+    )
+    wavespeed_control_video_resolution: str = Field(
+        default="480p",
+        alias="WAVESPEED_CONTROL_VIDEO_RESOLUTION",
+    )
+    wavespeed_control_video_seed: int = Field(
+        default=-1,
+        alias="WAVESPEED_CONTROL_VIDEO_SEED",
+    )
+    control_video_download_timeout_seconds: float = Field(
+        default=300.0,
+        alias="CONTROL_VIDEO_DOWNLOAD_TIMEOUT_SECONDS",
+    )
+    control_video_max_download_mb: float = Field(
+        default=150.0,
+        alias="CONTROL_VIDEO_MAX_DOWNLOAD_MB",
+    )
+    control_video_max_duration_seconds: float = Field(
+        default=7.0,
+        alias="CONTROL_VIDEO_MAX_DURATION_SECONDS",
+    )
+    control_video_min_duration_seconds: float = Field(
+        default=4.0,
+        alias="CONTROL_VIDEO_MIN_DURATION_SECONDS",
+    )
+    control_video_duration_tolerance_seconds: float = Field(
+        default=0.35,
+        alias="CONTROL_VIDEO_DURATION_TOLERANCE_SECONDS",
+    )
+    control_video_min_width: int = Field(
+        default=240,
+        alias="CONTROL_VIDEO_MIN_WIDTH",
+    )
+    control_video_min_height: int = Field(
+        default=400,
+        alias="CONTROL_VIDEO_MIN_HEIGHT",
+    )
+    control_video_max_pixels: int = Field(
+        default=5_000_000,
+        alias="CONTROL_VIDEO_MAX_PIXELS",
+    )
+    control_video_max_fps: float = Field(
+        default=60.0,
+        alias="CONTROL_VIDEO_MAX_FPS",
+    )
+
     storage_root: Path = Field(default=PROJECT_ROOT / "storage", alias="STORAGE_ROOT")
     local_task_workers: int = Field(default=1, ge=1, alias="LOCAL_TASK_WORKERS")
     ffmpeg_binary: str = Field(default="ffmpeg", alias="FFMPEG_BINARY")
@@ -316,6 +370,81 @@ class Settings(BaseSettings):
     def _validate_source_max_fps(cls, value: object) -> float:
         return _finite_positive(value, name="SOURCE_VIDEO_MAX_FPS", maximum=240)
 
+    @field_validator("wavespeed_control_video_duration_seconds", mode="before")
+    @classmethod
+    def _validate_control_duration(cls, value: object) -> int:
+        number = _finite_positive(
+            value, name="WAVESPEED_CONTROL_VIDEO_DURATION_SECONDS", maximum=30
+        )
+        duration = int(number)
+        if duration not in {5, 8}:
+            raise ValueError("WAVESPEED_CONTROL_VIDEO_DURATION_SECONDS must be 5 or 8")
+        return duration
+
+    @field_validator("wavespeed_control_video_resolution", mode="before")
+    @classmethod
+    def _validate_control_resolution(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        if text not in {"480p", "720p"}:
+            raise ValueError("WAVESPEED_CONTROL_VIDEO_RESOLUTION must be 480p or 720p")
+        return text
+
+    @field_validator("wavespeed_control_video_seed", mode="before")
+    @classmethod
+    def _validate_control_seed(cls, value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError("WAVESPEED_CONTROL_VIDEO_SEED must be an integer")
+        try:
+            seed = int(float(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("WAVESPEED_CONTROL_VIDEO_SEED must be an integer") from exc
+        if seed < -1 or seed > 2_147_483_647:
+            raise ValueError(
+                "WAVESPEED_CONTROL_VIDEO_SEED must be between -1 and 2147483647"
+            )
+        return seed
+
+    @field_validator("control_video_download_timeout_seconds", mode="before")
+    @classmethod
+    def _validate_control_download_timeout(cls, value: object) -> float:
+        return _finite_positive(
+            value, name="CONTROL_VIDEO_DOWNLOAD_TIMEOUT_SECONDS", maximum=1800
+        )
+
+    @field_validator("control_video_max_download_mb", mode="before")
+    @classmethod
+    def _validate_control_download_mb(cls, value: object) -> float:
+        return _finite_positive(value, name="CONTROL_VIDEO_MAX_DOWNLOAD_MB", maximum=500)
+
+    @field_validator(
+        "control_video_max_duration_seconds",
+        "control_video_min_duration_seconds",
+        "control_video_duration_tolerance_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _validate_control_duration_bounds(cls, value: object) -> float:
+        return _finite_positive(value, name="CONTROL_VIDEO_DURATION_BOUND", maximum=60)
+
+    @field_validator("control_video_min_width", "control_video_min_height", mode="before")
+    @classmethod
+    def _validate_control_min_dim(cls, value: object) -> int:
+        number = _finite_positive(value, name="CONTROL_VIDEO_MIN_DIMENSION", maximum=10_000)
+        return int(number)
+
+    @field_validator("control_video_max_pixels", mode="before")
+    @classmethod
+    def _validate_control_max_pixels(cls, value: object) -> int:
+        number = _finite_positive(
+            value, name="CONTROL_VIDEO_MAX_PIXELS", maximum=50_000_000
+        )
+        return int(number)
+
+    @field_validator("control_video_max_fps", mode="before")
+    @classmethod
+    def _validate_control_max_fps(cls, value: object) -> float:
+        return _finite_positive(value, name="CONTROL_VIDEO_MAX_FPS", maximum=240)
+
     @field_validator("storage_root", mode="before")
     @classmethod
     def _resolve_storage_root(cls, value: object) -> Path:
@@ -358,6 +487,10 @@ class Settings(BaseSettings):
     def source_video_max_download_bytes(self) -> int:
         return int(self.source_video_max_download_mb * 1024 * 1024)
 
+    @property
+    def control_video_max_download_bytes(self) -> int:
+        return int(self.control_video_max_download_mb * 1024 * 1024)
+
     def model_post_init(self, __context: object) -> None:
         if self.reference_image_min_width * self.reference_image_min_height > (
             self.reference_image_max_pixels
@@ -377,6 +510,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SOURCE_VIDEO_MIN_WIDTH * SOURCE_VIDEO_MIN_HEIGHT must be "
                 "<= SOURCE_VIDEO_MAX_PIXELS"
+            )
+        if self.control_video_min_duration_seconds >= self.control_video_max_duration_seconds:
+            raise ValueError(
+                "CONTROL_VIDEO_MIN_DURATION_SECONDS must be < "
+                "CONTROL_VIDEO_MAX_DURATION_SECONDS"
+            )
+        if self.control_video_min_width * self.control_video_min_height > (
+            self.control_video_max_pixels
+        ):
+            raise ValueError(
+                "CONTROL_VIDEO_MIN_WIDTH * CONTROL_VIDEO_MIN_HEIGHT must be "
+                "<= CONTROL_VIDEO_MAX_PIXELS"
             )
 
 
