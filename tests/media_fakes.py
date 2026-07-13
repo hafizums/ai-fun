@@ -136,6 +136,7 @@ class FakeMediaProvider(MediaProvider):
         timeout: float | None = None,
         poll_interval: float = 1.0,
         enable_sync_mode: bool = False,
+        max_task_retries: int = 0,
     ) -> MediaRunResult:
         self.started.set()
         payload = {
@@ -144,6 +145,7 @@ class FakeMediaProvider(MediaProvider):
             "timeout": timeout,
             "poll_interval": poll_interval,
             "enable_sync_mode": enable_sync_mode,
+            "max_task_retries": max_task_retries,
         }
         self.calls.append(payload)
         if self._delay_event is not None:

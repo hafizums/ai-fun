@@ -230,6 +230,7 @@ class CharacterEditGenerationService:
                 timeout=self._settings.wavespeed_media_timeout_seconds,
                 poll_interval=self._settings.wavespeed_media_poll_interval_seconds,
                 enable_sync_mode=False,
+                max_task_retries=0,
             )
             provider_url = result.output_urls[0]
             job_dir = self._storage.job_directory(job_id, create=True)

@@ -62,6 +62,30 @@ The original Gate 3 file `storage/generated/{job_id}/base_image.png` is uploaded
 
 Built strictly from the verified schema above. One upload of the base image, one Wan I2V generation call, no automatic retry, no model fallback, no LLM, no edit, no Fun Control.
 
+## Paid generation retry policy (Gate 5 correction)
+
+Verified SDK: **wavespeed 1.0.9** (constraint `wavespeed>=1.0.9,<1.1`).
+
+Public constructor includes `max_retries` and `max_connection_retries`. Public `Client.run(..., max_retries=...)`.
+
+SDK defaults in 1.0.9:
+
+- `max_retries = 0` (task layer)
+- `max_connection_retries = 5` (HTTP submission layer — **unsafe for paid POST**)
+
+Application policy:
+
+| Client | Purpose | `max_retries` | `max_connection_retries` |
+|--------|---------|---------------|--------------------------|
+| Upload | `Client.upload` only | SDK default (omitted) | SDK default (omitted) |
+| Generation | `Client.run` paid models | **0** | **0** |
+
+`run_model(..., max_task_retries=0)` always passes `max_retries=0` into `Client.run`. Non-zero values are forced to 0.
+
+Applies to base-image, character-edit, and source-video paid calls. Timeout/connection loss maps to `MEDIA_TIMEOUT` / `MEDIA_CONNECTION_FAILED` without resubmission. Explicit user retry via the stage endpoint is a new accepted paid attempt.
+
+In 1.0.9, `Client.upload()` is a single POST (does not loop on `max_connection_retries`); the upload client still omits zeroing so future SDK upload retries remain allowed and generation stays isolated.
+
 ## Secure download
 
 Reusable `SecureArtifactDownloader` extracted from Gate 3/4 image download:
@@ -101,7 +125,11 @@ Persisted URL is local only: `/api/jobs/{job_id}/source-video/file`.
 
 ## Tests
 
-Offline suite in `tests/test_gate5_api.py` covering status/transitions, concurrent claim, base-not-edited proof, verified schema keys, download rules, ffprobe validation (mocked + real fixtures), normalization, endpoints, artifact preservation, and no Fun Control. Full suite: **247 passed**.
+Offline suite in `tests/test_gate5_api.py` covering status/transitions, concurrent claim, base-not-edited proof, verified schema keys, download rules, ffprobe validation (mocked + real fixtures), normalization, endpoints, artifact preservation, and no Fun Control.
+
+Paid-retry correction suite in `tests/test_paid_retry_policy.py`: generation client constructed with both retry layers at 0, explicit task retry zero, single submission on timeout/lost response, upload client separate, base/edit/source no-paid-retry wiring.
+
+Full suite totals recorded after correction validation: **254 passed**.
 
 ## Manual live smoke test
 
@@ -132,6 +160,6 @@ Reuses existing `source_video_url`. No new columns. No database reset.
 
 ## Git information
 
-- Starting commit: `fc520a632d97eca4186b870d606699a8b21794c4`
-- Implementation commit: `0c173326f252b4b007db216e99dbb30bbcc18f47`
-- Final HEAD: `d75c765f21d1f7b71c17b1c43f702f4dad288d69`
+- Correction starting HEAD: `05b54105e8da8f234c4cb484d3ca6da63f2372de`
+- Prior Gate 5 implementation commit: `0c173326f252b4b007db216e99dbb30bbcc18f47`
+- Correction / Final HEAD: *(filled after commit)*

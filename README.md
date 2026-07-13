@@ -82,6 +82,7 @@ Storage:
 
 - **Task runner**: in-process `ThreadPoolExecutor`. Restart marks `SOURCE_VIDEO_GENERATING` (and other active states) failed; idle `SOURCE_VIDEO_READY` is preserved and deletable.
 - **I2V flow**: upload original base image once via public `Client.upload`, one `Client.run` on Wan 2.2 I2V with verified schema fields.
+- **Paid generation retries**: WaveSpeed dependency pinned to `wavespeed>=1.0.9,<1.1`. Generation uses a dedicated SDK client with `max_retries=0` and `max_connection_retries=0`, and `run_model` always passes `max_retries=0`. Upload uses a separate client that may keep SDK connection-retry defaults. Timeout/connection loss fails the stage without resubmitting; user retries via the stage endpoint are explicit new attempts.
 - **No LLM**, no character-edit call, and no Fun Control during source-video generation.
 
 ## Tests

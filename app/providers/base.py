@@ -41,8 +41,13 @@ class MediaProvider(ABC):
         timeout: float | None = None,
         poll_interval: float = 1.0,
         enable_sync_mode: bool = False,
+        max_task_retries: int = 0,
     ) -> MediaRunResult:
-        """Submit and wait for a model run using public SDK methods only."""
+        """Submit and wait for a model run using public SDK methods only.
+
+        ``max_task_retries`` defaults to 0. Paid generation must not automatically
+        resubmit a model POST after timeout or connection loss.
+        """
 
     @abstractmethod
     def get_prediction(self, prediction_id: str) -> dict[str, Any]:

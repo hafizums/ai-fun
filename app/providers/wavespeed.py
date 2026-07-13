@@ -1,16 +1,30 @@
 """WaveSpeedAI media provider adapter.
 
-Public SDK surface used:
-- Client(api_key=..., base_url=...)
+Public SDK surface used (wavespeed 1.0.9):
+- Client(
+    api_key=...,
+    base_url=...,
+    max_retries=...,
+    max_connection_retries=...,
+  )
 - Client.upload(file)
-- Client.run(model, input, timeout=..., poll_interval=..., enable_sync_mode=...)
+- Client.run(model, input, timeout=..., poll_interval=..., enable_sync_mode=...,
+             max_retries=...)
 
 Private methods are never called.
+
+Retry policy:
+- Upload client may keep SDK connection-retry defaults (upload is not a paid
+  model prediction). In 1.0.9, Client.upload() itself is a single POST.
+- Generation client always uses max_retries=0 and max_connection_retries=0 so
+  a lost response cannot trigger a second paid submission POST.
+- run_model always passes max_retries=0 at the task layer as well.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import urlparse
@@ -35,14 +49,30 @@ from app.providers.media_exceptions import (
 
 logger = logging.getLogger(__name__)
 
+ClientFactory = Callable[..., Any]
+
+
+def _default_client_factory(**kwargs: Any) -> Any:
+    from wavespeed import Client
+
+    return Client(**kwargs)
+
 
 class WaveSpeedProvider(MediaProvider):
     """Adapter around the official wavespeed.Client (media API base URL only)."""
 
-    def __init__(self, api_key: str, base_url: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        *,
+        client_factory: ClientFactory | None = None,
+    ) -> None:
         self._api_key = (api_key or "").strip()
         self._base_url = (base_url or "").rstrip("/")
-        self._client: Any | None = None
+        self._client_factory = client_factory or _default_client_factory
+        self._upload_client: Any | None = None
+        self._generation_client: Any | None = None
 
     @property
     def api_base_url(self) -> str:
@@ -52,20 +82,45 @@ class WaveSpeedProvider(MediaProvider):
     def is_configured(self) -> bool:
         return bool(self._api_key)
 
-    def _ensure_client(self) -> Any:
+    def _require_api_key(self) -> None:
         if not self._api_key:
             raise ProviderConfigurationError(
                 "WAVESPEED_API_KEY is not set. Add it to your local .env file."
             )
-        if self._client is None:
+
+    def _ensure_upload_client(self) -> Any:
+        """Client for file uploads — may retain bounded connection retries."""
+        self._require_api_key()
+        if self._upload_client is None:
             try:
-                from wavespeed import Client
+                # Leave max_connection_retries at SDK default (5 in 1.0.9).
+                # Upload is not a paid prediction; connection retries are safe.
+                self._upload_client = self._client_factory(
+                    api_key=self._api_key,
+                    base_url=self._base_url,
+                )
             except ImportError as exc:
                 raise ProviderConfigurationError(
                     "wavespeed package is not installed"
                 ) from exc
-            self._client = Client(api_key=self._api_key, base_url=self._base_url)
-        return self._client
+        return self._upload_client
+
+    def _ensure_generation_client(self) -> Any:
+        """Client for paid model runs — both retry layers forced to zero."""
+        self._require_api_key()
+        if self._generation_client is None:
+            try:
+                self._generation_client = self._client_factory(
+                    api_key=self._api_key,
+                    base_url=self._base_url,
+                    max_retries=0,
+                    max_connection_retries=0,
+                )
+            except ImportError as exc:
+                raise ProviderConfigurationError(
+                    "wavespeed package is not installed"
+                ) from exc
+        return self._generation_client
 
     def check_configuration(self) -> dict[str, Any]:
         """Configuration-only check — no network generation request."""
@@ -81,7 +136,7 @@ class WaveSpeedProvider(MediaProvider):
             }
 
         try:
-            self._ensure_client()
+            self._ensure_generation_client()
         except ProviderError:
             raise
         except Exception as exc:
@@ -100,7 +155,7 @@ class WaveSpeedProvider(MediaProvider):
         }
 
     def upload_file(self, file: str | Path | BinaryIO) -> str:
-        client = self._ensure_client()
+        client = self._ensure_upload_client()
         try:
             path_or_file: str | BinaryIO
             if isinstance(file, Path):
@@ -119,9 +174,21 @@ class WaveSpeedProvider(MediaProvider):
         timeout: float | None = None,
         poll_interval: float = 1.0,
         enable_sync_mode: bool = False,
+        max_task_retries: int = 0,
     ) -> MediaRunResult:
-        """Run a model via public Client.run and return a validated app result."""
-        client = self._ensure_client()
+        """Run a model via public Client.run and return a validated app result.
+
+        Paid generation never resubmits automatically. ``max_task_retries`` defaults
+        to 0 and is clamped to 0 for safety (explicit user retries happen at the
+        application claim layer).
+        """
+        if max_task_retries != 0:
+            logger.warning(
+                "Ignoring non-zero max_task_retries for paid generation; forcing 0"
+            )
+            max_task_retries = 0
+
+        client = self._ensure_generation_client()
         try:
             raw = client.run(
                 model,
@@ -129,6 +196,7 @@ class WaveSpeedProvider(MediaProvider):
                 timeout=timeout,
                 poll_interval=poll_interval,
                 enable_sync_mode=enable_sync_mode,
+                max_retries=max_task_retries,
             )
         except Exception as exc:
             raise self._map_media_exception(exc) from None
