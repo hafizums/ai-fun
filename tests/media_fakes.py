@@ -105,6 +105,7 @@ class FakeMediaProvider(MediaProvider):
         self._prediction_id = prediction_id
         self._result_factory = result_factory
         self.calls: list[dict[str, Any]] = []
+        self.upload_calls: list[str] = []
         self.started = threading.Event()
         self.finished = threading.Event()
 
@@ -121,7 +122,10 @@ class FakeMediaProvider(MediaProvider):
         }
 
     def upload_file(self, file: Any) -> str:
-        raise AssertionError("upload_file must not be called in Gate 3")
+        path = str(file)
+        self.upload_calls.append(path)
+        # Deterministic HTTPS URL without query params.
+        return f"https://cdn.example.invalid/upload/{len(self.upload_calls)}.png"
 
     def run_model(
         self,
@@ -169,6 +173,8 @@ class FakeMediaProvider(MediaProvider):
 def install_fake_media(app: Any, fake: FakeMediaProvider) -> FakeMediaProvider:
     app.state.wavespeed = fake
     app.state.base_image_generation._media = fake
+    if hasattr(app.state, "character_edit_generation"):
+        app.state.character_edit_generation._media = fake
     return fake
 
 

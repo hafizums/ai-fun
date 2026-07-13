@@ -1,10 +1,10 @@
-"""Job CRUD, prompt-generation, and base-image API endpoints."""
+﻿"""Job CRUD, prompt-generation, base-image, reference, and character-edit APIs."""
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func
 
@@ -13,17 +13,40 @@ from app.providers.llm_exceptions import LLMInvalidResponseError
 from app.providers.media_exceptions import (
     BaseImageInvalidAspectRatioError,
     BaseImageInvalidFileError,
+    EditImageInvalidAspectRatioError,
+    EditImageInvalidFileError,
+    MediaError,
+    ReferenceImageInvalidFileError,
 )
 from app.schemas.base_image import (
     BaseImageMetadataResponse,
     GenerateBaseImageAcceptedResponse,
 )
+from app.schemas.character_edit import (
+    EditedImageMetadataResponse,
+    GenerateCharacterEditAcceptedResponse,
+    ReferenceImageMetadataResponse,
+)
 from app.schemas.job import DeleteResponse, JobListResponse, JobResponse
 from app.schemas.prompt_api import GeneratePromptsAcceptedResponse, PromptEnvelopeResponse
 from app.schemas.prompts import PromptGenerationRequest
 from app.services.base_image_generation import BASE_IMAGE_FILENAME, local_base_image_url
-from app.services.image_normalize import inspect_local_png
+from app.services.character_edit_generation import (
+    EDITED_IMAGE_FILENAME,
+    local_edited_image_url,
+)
+from app.services.image_normalize import (
+    inspect_edited_png,
+    inspect_local_png,
+    inspect_reference_png,
+)
 from app.services.prompt_generation import load_prompt_envelope
+from app.services.reference_upload import (
+    SAFE_ERROR_MESSAGES as REFERENCE_SAFE_MESSAGES,
+)
+from app.services.reference_upload import (
+    local_reference_image_url,
+)
 from app.services.status_transitions import is_deletable
 from app.services.storage import StoragePathError
 
@@ -33,6 +56,14 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 100
+
+REFERENCE_READY_STATUSES = frozenset(
+    {
+        JobStatus.REFERENCE_READY,
+        JobStatus.CHARACTER_EDITING,
+        JobStatus.CHARACTER_EDIT_READY,
+    }
+)
 
 
 @router.post("", response_model=JobResponse, status_code=201)
@@ -216,6 +247,184 @@ def get_base_image_file(job_id: str, request: Request) -> FileResponse:
         )
 
 
+UPLOAD_FILE_FIELD = File(...)
+
+
+@router.post("/{job_id}/reference-image", response_model=ReferenceImageMetadataResponse)
+async def upload_reference_image(
+    job_id: str,
+    request: Request,
+    file: UploadFile = UPLOAD_FILE_FIELD,
+) -> ReferenceImageMetadataResponse:
+    """Upload and normalize a local reference portrait (no provider call)."""
+    service = request.app.state.reference_upload
+    try:
+        job, info = service.upload_reference(job_id, file)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MediaError as exc:
+        detail = REFERENCE_SAFE_MESSAGES.get(exc.code, exc.public_message)
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+    return ReferenceImageMetadataResponse(
+        job_id=job.id,
+        status=job.status.value,
+        url=local_reference_image_url(job.id),
+        width=info.width,
+        height=info.height,
+        format=info.format,
+        size_bytes=info.size_bytes,
+    )
+
+
+@router.get("/{job_id}/reference-image", response_model=ReferenceImageMetadataResponse)
+def get_reference_image_metadata(
+    job_id: str, request: Request
+) -> ReferenceImageMetadataResponse:
+    settings = request.app.state.settings
+    storage = request.app.state.storage
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status not in REFERENCE_READY_STATUSES or not job.reference_image_path:
+            raise HTTPException(status_code=409, detail="Reference image is not ready")
+        try:
+            path = storage.resolve_safe(job.reference_image_path)
+            info = inspect_reference_png(
+                path, max_pixels=settings.reference_image_max_pixels
+            )
+        except (ReferenceImageInvalidFileError, StoragePathError) as exc:
+            logger.error("Reference ready job_id=%s local file invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored reference image is missing or invalid",
+            ) from exc
+        return ReferenceImageMetadataResponse(
+            job_id=job_id,
+            status=job.status.value,
+            url=local_reference_image_url(job_id),
+            width=info.width,
+            height=info.height,
+            format=info.format,
+            size_bytes=info.size_bytes,
+        )
+
+
+@router.get("/{job_id}/reference-image/file")
+def get_reference_image_file(job_id: str, request: Request) -> FileResponse:
+    settings = request.app.state.settings
+    storage = request.app.state.storage
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status not in REFERENCE_READY_STATUSES or not job.reference_image_path:
+            raise HTTPException(status_code=409, detail="Reference image is not ready")
+        try:
+            path = storage.resolve_safe(job.reference_image_path)
+            inspect_reference_png(path, max_pixels=settings.reference_image_max_pixels)
+        except (ReferenceImageInvalidFileError, StoragePathError) as exc:
+            logger.error("Reference ready job_id=%s file serve invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored reference image is missing or invalid",
+            ) from exc
+        return FileResponse(
+            path,
+            media_type="image/png",
+            filename=f"reference-image-{job_id}.png",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+
+@router.post(
+    "/{job_id}/generate-character-edit",
+    response_model=GenerateCharacterEditAcceptedResponse,
+    status_code=202,
+)
+def generate_character_edit(
+    job_id: str,
+    request: Request,
+) -> GenerateCharacterEditAcceptedResponse:
+    """Accept async character editing (no provider call in this request)."""
+    service = request.app.state.character_edit_generation
+    try:
+        job = service.accept_generation(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return GenerateCharacterEditAcceptedResponse(
+        id=job.id,
+        status=job.status.value,
+        current_stage=job.current_stage,
+        progress_percent=job.progress_percent,
+    )
+
+
+@router.get("/{job_id}/edited-image", response_model=EditedImageMetadataResponse)
+def get_edited_image_metadata(job_id: str, request: Request) -> EditedImageMetadataResponse:
+    settings = request.app.state.settings
+    storage = request.app.state.storage
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.CHARACTER_EDIT_READY:
+            raise HTTPException(status_code=409, detail="Edited image is not ready")
+        path = storage.job_directory(job_id, create=False) / EDITED_IMAGE_FILENAME
+        try:
+            info = inspect_edited_png(path, max_pixels=settings.base_image_max_pixels)
+        except (EditImageInvalidFileError, EditImageInvalidAspectRatioError) as exc:
+            logger.error("CHARACTER_EDIT_READY job_id=%s local file invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored edited image is missing or invalid",
+            ) from exc
+        return EditedImageMetadataResponse(
+            job_id=job_id,
+            status=job.status.value,
+            url=job.edited_image_url or local_edited_image_url(job_id),
+            width=info.width,
+            height=info.height,
+            format=info.format,
+            size_bytes=info.size_bytes,
+        )
+
+
+@router.get("/{job_id}/edited-image/file")
+def get_edited_image_file(job_id: str, request: Request) -> FileResponse:
+    settings = request.app.state.settings
+    storage = request.app.state.storage
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.CHARACTER_EDIT_READY:
+            raise HTTPException(status_code=409, detail="Edited image is not ready")
+        path = storage.job_directory(job_id, create=False) / EDITED_IMAGE_FILENAME
+        try:
+            inspect_edited_png(path, max_pixels=settings.base_image_max_pixels)
+        except (EditImageInvalidFileError, EditImageInvalidAspectRatioError) as exc:
+            logger.error("CHARACTER_EDIT_READY job_id=%s file serve invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored edited image is missing or invalid",
+            ) from exc
+        return FileResponse(
+            path,
+            media_type="image/png",
+            filename=f"edited-image-{job_id}.png",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job(job_id: str, request: Request) -> JobResponse:
     with request.app.state.session_factory() as session:
@@ -238,8 +447,8 @@ def delete_job(job_id: str, request: Request) -> DeleteResponse:
                 status_code=409,
                 detail=(
                     f"Cannot delete job in active status {job.status.value}. "
-                    "Only DRAFT, PROMPT_READY, BASE_IMAGE_READY, COMPLETED, or "
-                    "FAILED jobs may be deleted."
+                    "Only DRAFT, PROMPT_READY, BASE_IMAGE_READY, REFERENCE_READY, "
+                    "CHARACTER_EDIT_READY, COMPLETED, or FAILED jobs may be deleted."
                 ),
             )
         try:

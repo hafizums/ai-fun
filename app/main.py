@@ -14,9 +14,11 @@ from app.logging_config import configure_logging, get_logger
 from app.providers.wavespeed import WaveSpeedProvider
 from app.providers.wavespeed_llm import WaveSpeedLLMProvider
 from app.services.base_image_generation import BaseImageGenerationService
+from app.services.character_edit_generation import CharacterEditGenerationService
 from app.services.image_download import ImageDownloader
 from app.services.job_recovery import recover_interrupted_jobs
 from app.services.prompt_generation import PromptGenerationService
+from app.services.reference_upload import ReferenceUploadService
 from app.services.storage import StorageService
 from app.services.task_runner import TaskRunner
 
@@ -56,9 +58,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="AI Fun Motion",
         description=(
             "Local personal-use AI video transformation "
-            "(Gate 3: async base-image generation)"
+            "(Gate 4: reference upload and character edit)"
         ),
-        version="0.3.0",
+        version="0.4.0",
         lifespan=lifespan,
     )
 
@@ -94,6 +96,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings=app_settings,
         downloader=downloader,
     )
+    reference_upload = ReferenceUploadService(
+        session_factory=session_factory,
+        storage=storage,
+        settings=app_settings,
+    )
+    character_edit_generation = CharacterEditGenerationService(
+        session_factory=session_factory,
+        task_runner=task_runner,
+        media_provider=wavespeed,
+        storage=storage,
+        settings=app_settings,
+        downloader=downloader,
+    )
 
     app.state.settings = app_settings
     app.state.engine = engine
@@ -104,6 +119,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.llm = llm
     app.state.prompt_generation = prompt_generation
     app.state.base_image_generation = base_image_generation
+    app.state.reference_upload = reference_upload
+    app.state.character_edit_generation = character_edit_generation
     app.state.image_downloader = downloader
 
     app.include_router(health.router)

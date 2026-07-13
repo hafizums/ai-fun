@@ -67,3 +67,63 @@ class BaseImageInvalidAspectRatioError(MediaError):
 class PromptPackageCorruptedError(MediaError):
     code = "PROMPT_PACKAGE_CORRUPTED"
     public_message = "The stored prompt package is corrupted or incomplete."
+
+
+class ReferenceUploadTooLargeError(MediaError):
+    code = "REFERENCE_UPLOAD_TOO_LARGE"
+    public_message = "The reference image upload exceeded the size limit."
+
+
+class ReferenceImageEmptyError(MediaError):
+    code = "REFERENCE_IMAGE_EMPTY"
+    public_message = "The reference image upload was empty."
+
+
+class ReferenceImageInvalidFileError(MediaError):
+    code = "REFERENCE_IMAGE_INVALID_FILE"
+    public_message = "The reference image file is invalid."
+
+
+class ReferenceImageTooSmallError(MediaError):
+    code = "REFERENCE_IMAGE_TOO_SMALL"
+    public_message = "The reference image dimensions are below the minimum."
+
+
+class ReferenceImageTooLargeError(MediaError):
+    code = "REFERENCE_IMAGE_TOO_LARGE"
+    public_message = "The reference image exceeds the maximum pixel limit."
+
+
+class ReferenceImageStorageFailedError(MediaError):
+    code = "REFERENCE_IMAGE_STORAGE_FAILED"
+    public_message = "Failed to store the reference image."
+
+
+class BaseImageMissingOrInvalidError(MediaError):
+    code = "BASE_IMAGE_MISSING_OR_INVALID"
+    public_message = "The base image is missing or invalid."
+
+
+class ReferenceImageMissingOrInvalidError(MediaError):
+    code = "REFERENCE_IMAGE_MISSING_OR_INVALID"
+    public_message = "The reference image is missing or invalid."
+
+
+class EditImageDownloadError(MediaError):
+    code = "EDIT_IMAGE_DOWNLOAD_FAILED"
+    public_message = "Failed to download the edited image."
+
+
+class EditImageTooLargeError(MediaError):
+    code = "EDIT_IMAGE_TOO_LARGE"
+    public_message = "The edited image exceeded the download size limit."
+
+
+class EditImageInvalidFileError(MediaError):
+    code = "EDIT_IMAGE_INVALID_FILE"
+    public_message = "The edited image file is invalid."
+
+
+class EditImageInvalidAspectRatioError(MediaError):
+    code = "EDIT_IMAGE_INVALID_ASPECT_RATIO"
+    public_message = "The edited image does not have a valid 9:16 portrait ratio."

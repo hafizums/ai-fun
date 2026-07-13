@@ -42,6 +42,17 @@ def tmp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("BASE_IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "120")
     monkeypatch.setenv("BASE_IMAGE_MAX_DOWNLOAD_MB", "25")
     monkeypatch.setenv("BASE_IMAGE_MAX_PIXELS", "25000000")
+    monkeypatch.setenv(
+        "WAVESPEED_CHARACTER_EDIT_MODEL", "openai/gpt-image-2/edit"
+    )
+    monkeypatch.setenv("WAVESPEED_CHARACTER_EDIT_ASPECT_RATIO", "9:16")
+    monkeypatch.setenv("WAVESPEED_CHARACTER_EDIT_RESOLUTION", "1k")
+    monkeypatch.setenv("WAVESPEED_CHARACTER_EDIT_QUALITY", "medium")
+    monkeypatch.setenv("WAVESPEED_CHARACTER_EDIT_OUTPUT_FORMAT", "png")
+    monkeypatch.setenv("REFERENCE_IMAGE_MAX_UPLOAD_MB", "15")
+    monkeypatch.setenv("REFERENCE_IMAGE_MAX_PIXELS", "25000000")
+    monkeypatch.setenv("REFERENCE_IMAGE_MIN_WIDTH", "256")
+    monkeypatch.setenv("REFERENCE_IMAGE_MIN_HEIGHT", "256")
     monkeypatch.setenv("LOCAL_TASK_WORKERS", "1")
     monkeypatch.setenv("FFMPEG_BINARY", "ffmpeg")
     monkeypatch.setenv("FFPROBE_BINARY", "ffprobe")
@@ -67,6 +78,7 @@ def app(tmp_env: Settings):
     )
     application.state.image_downloader = downloader
     application.state.base_image_generation._downloader = downloader
+    application.state.character_edit_generation._downloader = downloader
     return application
 
 

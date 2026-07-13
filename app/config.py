@@ -106,8 +106,44 @@ class Settings(BaseSettings):
         alias="BASE_IMAGE_MAX_PIXELS",
     )
 
+    wavespeed_character_edit_model: str = Field(
+        default="openai/gpt-image-2/edit",
+        alias="WAVESPEED_CHARACTER_EDIT_MODEL",
+    )
+    wavespeed_character_edit_aspect_ratio: str = Field(
+        default="9:16",
+        alias="WAVESPEED_CHARACTER_EDIT_ASPECT_RATIO",
+    )
+    wavespeed_character_edit_resolution: str = Field(
+        default="1k",
+        alias="WAVESPEED_CHARACTER_EDIT_RESOLUTION",
+    )
+    wavespeed_character_edit_quality: str = Field(
+        default="medium",
+        alias="WAVESPEED_CHARACTER_EDIT_QUALITY",
+    )
+    wavespeed_character_edit_output_format: str = Field(
+        default="png",
+        alias="WAVESPEED_CHARACTER_EDIT_OUTPUT_FORMAT",
+    )
+    reference_image_max_upload_mb: float = Field(
+        default=15.0,
+        alias="REFERENCE_IMAGE_MAX_UPLOAD_MB",
+    )
+    reference_image_max_pixels: int = Field(
+        default=25_000_000,
+        alias="REFERENCE_IMAGE_MAX_PIXELS",
+    )
+    reference_image_min_width: int = Field(
+        default=256,
+        alias="REFERENCE_IMAGE_MIN_WIDTH",
+    )
+    reference_image_min_height: int = Field(
+        default=256,
+        alias="REFERENCE_IMAGE_MIN_HEIGHT",
+    )
+
     storage_root: Path = Field(default=PROJECT_ROOT / "storage", alias="STORAGE_ROOT")
-    max_reference_image_mb: int = Field(default=10, alias="MAX_REFERENCE_IMAGE_MB")
     local_task_workers: int = Field(default=1, ge=1, alias="LOCAL_TASK_WORKERS")
     ffmpeg_binary: str = Field(default="ffmpeg", alias="FFMPEG_BINARY")
     ffprobe_binary: str = Field(default="ffprobe", alias="FFPROBE_BINARY")
@@ -147,6 +183,25 @@ class Settings(BaseSettings):
         number = _finite_positive(value, name="BASE_IMAGE_MAX_PIXELS", maximum=100_000_000)
         return int(number)
 
+    @field_validator("reference_image_max_upload_mb", mode="before")
+    @classmethod
+    def _validate_reference_upload_mb(cls, value: object) -> float:
+        return _finite_positive(value, name="REFERENCE_IMAGE_MAX_UPLOAD_MB", maximum=100)
+
+    @field_validator("reference_image_max_pixels", mode="before")
+    @classmethod
+    def _validate_reference_max_pixels(cls, value: object) -> int:
+        number = _finite_positive(
+            value, name="REFERENCE_IMAGE_MAX_PIXELS", maximum=100_000_000
+        )
+        return int(number)
+
+    @field_validator("reference_image_min_width", "reference_image_min_height", mode="before")
+    @classmethod
+    def _validate_reference_min_dim(cls, value: object) -> int:
+        number = _finite_positive(value, name="REFERENCE_IMAGE_MIN_DIMENSION", maximum=10_000)
+        return int(number)
+
     @field_validator("storage_root", mode="before")
     @classmethod
     def _resolve_storage_root(cls, value: object) -> Path:
@@ -180,6 +235,19 @@ class Settings(BaseSettings):
     @property
     def base_image_max_download_bytes(self) -> int:
         return int(self.base_image_max_download_mb * 1024 * 1024)
+
+    @property
+    def reference_image_max_upload_bytes(self) -> int:
+        return int(self.reference_image_max_upload_mb * 1024 * 1024)
+
+    def model_post_init(self, __context: object) -> None:
+        if self.reference_image_min_width * self.reference_image_min_height > (
+            self.reference_image_max_pixels
+        ):
+            raise ValueError(
+                "REFERENCE_IMAGE_MIN_WIDTH * REFERENCE_IMAGE_MIN_HEIGHT must be "
+                "<= REFERENCE_IMAGE_MAX_PIXELS"
+            )
 
 
 @lru_cache

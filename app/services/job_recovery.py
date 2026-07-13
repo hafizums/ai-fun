@@ -23,7 +23,8 @@ def recover_interrupted_jobs(session: Session) -> int:
     """Mark active processing jobs as FAILED after an application restart.
 
     Preserves artifact paths/URLs. Does not modify DRAFT, COMPLETED, or FAILED jobs.
-    Also leaves idle waiting states (BASE_IMAGE_READY, WAITING_FOR_REFERENCE) untouched.
+    Also leaves idle waiting states (BASE_IMAGE_READY, WAITING_FOR_REFERENCE,
+    REFERENCE_READY, CHARACTER_EDIT_READY) untouched.
     """
     jobs = (
         session.query(GenerationJob)
