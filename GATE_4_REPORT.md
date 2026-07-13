@@ -204,6 +204,6 @@ When a valid backup exists for `WAITING_FOR_REFERENCE`, always restore it over t
 
 - Implementation commit: `c9788ad146e87429ab66ca0198092a51ce327d06`
 - Correction commit: `96c41c865f843434bab25cc859fd49cdf2e0fd24`
-- Backup-authoritative restart correction: *(filled after commit)*
-- Final HEAD: _(docs follow-up may trail)_
+- Backup-authoritative restart correction: `ecb0b536aab5ce57f4da31e13626c01c69c4926e`
+- Final HEAD: `ecb0b536aab5ce57f4da31e13626c01c69c4926e`
 - Final Git status: clean working tree on `master` after Gate 4 corrections
