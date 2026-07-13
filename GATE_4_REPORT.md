@@ -27,9 +27,46 @@ BASE_IMAGE_READY
 ## Reference upload
 
 - Multipart field `file` only; filename/MIME ignored
-- Streamed to job-scoped temp with byte cap; PNG/JPEG/WebP only; EXIF orientation applied; metadata stripped; atomic publish to `uploads/{job_id}/reference_image.png`
+- Atomic SQL claim from `BASE_IMAGE_READY` or `REFERENCE_READY` → `WAITING_FOR_REFERENCE` before reading bytes; commit before stream
+- Streamed to job-scoped temp with byte cap; PNG/JPEG/WebP only; EXIF orientation applied; metadata stripped
+- Replacement sequence: normalize to staging → verify reservation → backup prior final → publish staging → DB commit → delete backup
+- Rollback on failure restores backup bytes to `reference_image.png` and prior job status/path
 - DB stores relative path `uploads/{job_id}/reference_image.png`
-- Replacement preserves prior valid reference until new normalize succeeds
+
+## Atomic upload claim design
+
+- Conditional `UPDATE generation_jobs SET status='WAITING_FOR_REFERENCE' ... WHERE status IN ('BASE_IMAGE_READY','REFERENCE_READY')`
+- Only `rowcount == 1` proceeds; competing upload/edit requests receive `409`
+- Character edit atomic claim requires `REFERENCE_READY`, so edit is blocked while upload is reserved
+- Upload re-checks `WAITING_FOR_REFERENCE` before file publication and before DB commit
+
+## Backup and rollback sequence
+
+Files under `uploads/{job_id}/`:
+
+```text
+reference_image.upload          # streaming partial
+reference_image.staging.png     # normalized candidate
+reference_image.backup.png      # prior final during replacement
+reference_image.png             # published final
+```
+
+On replacement failure after backup move: restore backup → final, revert status to `REFERENCE_READY`, preserve `reference_image_path`. On initial-upload failure after publish: remove final, revert to `BASE_IMAGE_READY`.
+
+## Upload/edit race prevention
+
+- Upload holds `WAITING_FOR_REFERENCE` from claim until commit; edit cannot claim during reservation
+- Edit claim from `CHARACTER_EDITING` blocks upload claim (`409`)
+- Startup reconciliation restores idle status for stranded `WAITING_FOR_REFERENCE` jobs without deleting valid references
+
+## Restart reconciliation
+
+On startup, `reconcile_waiting_for_reference_jobs()`:
+
+- Removes stale upload/staging/backup artifacts
+- If valid final + path → `REFERENCE_READY`
+- Otherwise → `BASE_IMAGE_READY`, clear path, remove invalid final
+- If backup exists without valid final, restores backup to final when possible
 
 ## Edit model configuration
 
@@ -77,13 +114,31 @@ Public SDK only: `Client.upload`, `Client.run`. Media base URL: `WAVESPEED_API_B
 ## Tests
 
 - Commands: `pytest -q`; `ruff check app tests`
-- Total: 213
-- Passed: 213
+- Total: 222
+- Passed: 222
 - Failed: 0
 - Skipped: 0
 - Warnings: 1 (Starlette TestClient deprecation)
 
 Concurrent claim: `test_concurrent_edit_claim_enqueues_once` — passed.
+
+Concurrent upload: `test_concurrent_upload_claim_one_winner` — passed (claim barrier + reserved-state pause).
+
+Upload/edit race: `test_edit_rejected_during_reserved_upload`, `test_upload_rejected_during_character_editing` — passed.
+
+Rollback: commit-failure and post-publication restore tests — passed.
+
+## Format-validation correction (Gate 4)
+
+Correction starting HEAD: `5a1632a5bbb37c738997600badfebdf7fe81da28`.
+
+### Finding
+
+Reference replacement used `os.replace(staging, final)` before DB commit without backup/restore. A failure after publication could leave the prior reference lost. Upload reservation was not atomic, allowing edit/upload races.
+
+### Correction
+
+Atomic upload claim, backup/rollback publication, DB commit after file publish, startup reconciliation, and concurrency/race regression tests.
 
 ## Manual live smoke test
 
@@ -117,5 +172,6 @@ Concurrent claim: `test_concurrent_edit_claim_enqueues_once` — passed.
 ## Git information
 
 - Implementation commit: `c9788ad146e87429ab66ca0198092a51ce327d06`
+- Correction commit: *(filled after commit)*
 - Final HEAD: _(docs follow-up may trail)_
-- Final Git status: clean working tree on `master` after Gate 4 commits
+- Final Git status: clean working tree on `master` after Gate 4 correction

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import UploadFile
+from sqlalchemy import update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
@@ -22,12 +26,12 @@ from app.services.image_normalize import (
     inspect_reference_png,
     normalize_reference_image,
 )
-from app.services.status_transitions import assert_can_transition
 from app.services.storage import StorageService
 
 logger = logging.getLogger(__name__)
 
 REFERENCE_FILENAME = "reference_image.png"
+REFERENCE_BACKUP_FILENAME = "reference_image.backup.png"
 REFERENCE_UPLOAD_PARTIAL = "reference_image.upload"
 REFERENCE_NORMALIZE_STAGING = "reference_image.staging.png"
 REFERENCE_STAGE = "reference_upload"
@@ -35,12 +39,10 @@ REFERENCE_READY_STAGE = "reference_ready"
 
 REFERENCE_RELATIVE_TEMPLATE = "uploads/{job_id}/reference_image.png"
 
-UPLOAD_ELIGIBLE = frozenset(
-    {
-        JobStatus.BASE_IMAGE_READY,
-        JobStatus.WAITING_FOR_REFERENCE,
-        JobStatus.REFERENCE_READY,
-    }
+REFERENCE_ARTIFACT_NAMES = (
+    REFERENCE_UPLOAD_PARTIAL,
+    REFERENCE_NORMALIZE_STAGING,
+    REFERENCE_BACKUP_FILENAME,
 )
 
 SAFE_ERROR_MESSAGES: dict[str, str] = {
@@ -51,6 +53,13 @@ SAFE_ERROR_MESSAGES: dict[str, str] = {
     "REFERENCE_IMAGE_TOO_LARGE": "The reference image exceeds the maximum pixel limit.",
     "REFERENCE_IMAGE_STORAGE_FAILED": "Failed to store the reference image.",
 }
+
+
+@dataclass(frozen=True)
+class UploadClaimResult:
+    prior_status: JobStatus
+    had_valid_reference: bool
+    prior_reference_path: str | None
 
 
 def local_reference_image_url(job_id: str) -> str:
@@ -65,6 +74,137 @@ def reference_absolute_path(storage: StorageService, job_id: str) -> Path:
     return storage.upload_job_directory(job_id, create=True) / REFERENCE_FILENAME
 
 
+def reference_paths(upload_dir: Path) -> dict[str, Path]:
+    return {
+        "partial": upload_dir / REFERENCE_UPLOAD_PARTIAL,
+        "staging": upload_dir / REFERENCE_NORMALIZE_STAGING,
+        "backup": upload_dir / REFERENCE_BACKUP_FILENAME,
+        "final": upload_dir / REFERENCE_FILENAME,
+    }
+
+
+def _reference_file_valid(
+    storage: StorageService,
+    job_id: str,
+    relative: str | None,
+    *,
+    max_pixels: int,
+) -> bool:
+    if relative != reference_relative_path(job_id):
+        return False
+    try:
+        path = storage.resolve_safe(relative)
+        inspect_reference_png(path, max_pixels=max_pixels)
+        return True
+    except Exception:
+        return False
+
+
+def _cleanup_artifacts(*paths: Path) -> None:
+    for path in paths:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            logger.error(
+                "Failed cleaning reference upload artifact "
+                "error_code=REFERENCE_IMAGE_STORAGE_FAILED"
+            )
+
+
+def _restore_reference_files(
+    *,
+    final: Path,
+    backup: Path,
+    had_prior_valid: bool,
+    published_final: bool,
+) -> None:
+    if had_prior_valid:
+        if backup.is_file():
+            if final.exists():
+                final.unlink()
+            os.replace(backup, final)
+        elif published_final and final.is_file():
+            final.unlink()
+    elif published_final and final.is_file():
+        final.unlink()
+
+
+def reconcile_waiting_for_reference_jobs(
+    session: Session,
+    storage: StorageService,
+    settings: Settings,
+) -> int:
+    """Restore idle status after a crash left jobs in WAITING_FOR_REFERENCE."""
+    jobs = (
+        session.query(GenerationJob)
+        .filter(GenerationJob.status == JobStatus.WAITING_FOR_REFERENCE)
+        .all()
+    )
+    if not jobs:
+        return 0
+
+    reconciled = 0
+    for job in jobs:
+        upload_dir = storage.upload_job_directory(job.id, create=False)
+        paths = reference_paths(upload_dir)
+        final = paths["final"]
+        backup = paths["backup"]
+
+        if backup.is_file() and not _reference_file_valid(
+            storage,
+            job.id,
+            job.reference_image_path,
+            max_pixels=settings.reference_image_max_pixels,
+        ):
+            try:
+                if final.exists():
+                    final.unlink()
+                os.replace(backup, final)
+            except OSError:
+                logger.error(
+                    "Reference restart restore failed job_id=%s "
+                    "error_code=REFERENCE_IMAGE_STORAGE_FAILED",
+                    job.id,
+                )
+
+        _cleanup_artifacts(paths["partial"], paths["staging"], paths["backup"])
+
+        if _reference_file_valid(
+            storage,
+            job.id,
+            reference_relative_path(job.id),
+            max_pixels=settings.reference_image_max_pixels,
+        ):
+            job.status = JobStatus.REFERENCE_READY
+            job.current_stage = REFERENCE_READY_STAGE
+            job.reference_image_path = reference_relative_path(job.id)
+        else:
+            job.status = JobStatus.BASE_IMAGE_READY
+            job.current_stage = "base_image_ready"
+            job.reference_image_path = None
+            if final.is_file():
+                try:
+                    final.unlink()
+                except OSError:
+                    logger.error(
+                        "Reference restart cleanup failed job_id=%s "
+                        "error_code=REFERENCE_IMAGE_STORAGE_FAILED",
+                        job.id,
+                    )
+        job.updated_at = utc_now()
+        reconciled += 1
+        logger.warning(
+            "Reconciled WAITING_FOR_REFERENCE job_id=%s status=%s",
+            job.id,
+            job.status.value,
+        )
+
+    if reconciled:
+        session.commit()
+    return reconciled
+
+
 class ReferenceUploadService:
     """Accept multipart reference uploads and publish a normalized local PNG."""
 
@@ -74,39 +214,31 @@ class ReferenceUploadService:
         session_factory: sessionmaker[Session],
         storage: StorageService,
         settings: Settings,
+        after_claim_hook: Callable[[], None] | None = None,
+        before_db_commit_hook: Callable[[], None] | None = None,
+        claim_barrier: threading.Barrier | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._storage = storage
         self._settings = settings
+        self._after_claim_hook = after_claim_hook
+        self._before_db_commit_hook = before_db_commit_hook
+        self._claim_barrier = claim_barrier
 
     def upload_reference(
         self, job_id: str, upload: UploadFile
     ) -> tuple[GenerationJob, NormalizedImageInfo]:
-        with self._session_factory() as session:
-            job = session.get(GenerationJob, job_id)
-            if job is None:
-                raise LookupError("Job not found")
-            if job.status == JobStatus.CHARACTER_EDITING:
-                raise PermissionError("Cannot replace reference while character editing")
-            if job.status == JobStatus.CHARACTER_EDIT_READY:
-                raise PermissionError("Cannot replace reference after character edit is ready")
-            if job.status not in UPLOAD_ELIGIBLE:
-                raise PermissionError("Job is not eligible for reference upload")
-            prior_status = job.status
-            had_valid_reference = self._has_valid_reference(job_id, job.reference_image_path)
-
-            if prior_status == JobStatus.BASE_IMAGE_READY:
-                assert_can_transition(job.status, JobStatus.WAITING_FOR_REFERENCE)
-                job.status = JobStatus.WAITING_FOR_REFERENCE
-                job.current_stage = REFERENCE_STAGE
-                job.updated_at = utc_now()
-                session.commit()
+        claim = self._atomic_claim(job_id)
+        if self._after_claim_hook is not None:
+            self._after_claim_hook()
 
         upload_dir = self._storage.upload_job_directory(job_id, create=True)
-        partial = upload_dir / REFERENCE_UPLOAD_PARTIAL
-        staging = upload_dir / REFERENCE_NORMALIZE_STAGING
-        final = upload_dir / REFERENCE_FILENAME
-        info: NormalizedImageInfo | None = None
+        paths = reference_paths(upload_dir)
+        partial = paths["partial"]
+        staging = paths["staging"]
+        backup = paths["backup"]
+        final = paths["final"]
+        published_final = False
 
         try:
             self._stream_upload_to_partial(upload, partial)
@@ -117,40 +249,36 @@ class ReferenceUploadService:
                 min_width=self._settings.reference_image_min_width,
                 min_height=self._settings.reference_image_min_height,
             )
-            # Preserve prior valid reference until replace succeeds.
+            self._assert_still_reserved(job_id)
+            had_prior_final = claim.had_valid_reference and final.is_file()
+            if had_prior_final:
+                os.replace(final, backup)
             os.replace(staging, final)
+            published_final = True
             if not self._storage.is_under_root(final):
                 raise ReferenceImageStorageFailedError()
-            relative = reference_relative_path(job_id)
+
+            self._commit_reference_ready(job_id)
+            _cleanup_artifacts(partial, staging, backup)
             with self._session_factory() as session:
-                job = session.get(GenerationJob, job_id)
-                if job is None:
-                    raise LookupError("Job not found")
-                if job.status not in {
-                    JobStatus.WAITING_FOR_REFERENCE,
-                    JobStatus.REFERENCE_READY,
-                }:
-                    raise PermissionError("Job is not eligible for reference upload")
-                if job.status == JobStatus.WAITING_FOR_REFERENCE:
-                    assert_can_transition(job.status, JobStatus.REFERENCE_READY)
-                job.status = JobStatus.REFERENCE_READY
-                job.current_stage = REFERENCE_READY_STAGE
-                job.progress_percent = max(job.progress_percent, 40)
-                job.reference_image_path = relative
-                job.error_code = None
-                job.error_message = None
-                job.failed_stage = None
-                job.updated_at = utc_now()
-                session.commit()
-                session.refresh(job)
-                session.expunge(job)
-                return job, info
+                refreshed = session.get(GenerationJob, job_id)
+                assert refreshed is not None
+                session.expunge(refreshed)
+                return refreshed, info
         except MediaError:
-            self._cleanup_paths(partial, staging)
-            self._revert_after_failure(
+            self._rollback_upload(
                 job_id,
-                prior_status=prior_status,
-                had_valid_reference=had_valid_reference,
+                claim=claim,
+                paths=paths,
+                published_final=published_final,
+            )
+            raise
+        except PermissionError:
+            self._rollback_upload(
+                job_id,
+                claim=claim,
+                paths=paths,
+                published_final=published_final,
             )
             raise
         except Exception:
@@ -158,15 +286,135 @@ class ReferenceUploadService:
                 "Reference upload failed job_id=%s exception_class=Unexpected",
                 job_id,
             )
-            self._cleanup_paths(partial, staging)
-            self._revert_after_failure(
+            self._rollback_upload(
                 job_id,
-                prior_status=prior_status,
-                had_valid_reference=had_valid_reference,
+                claim=claim,
+                paths=paths,
+                published_final=published_final,
             )
             raise ReferenceImageStorageFailedError() from None
-        finally:
-            self._cleanup_paths(partial, staging)
+
+    def _atomic_claim(self, job_id: str) -> UploadClaimResult:
+        if self._claim_barrier is not None:
+            self._claim_barrier.wait(timeout=5)
+        with self._session_factory() as session:
+            job = session.get(GenerationJob, job_id)
+            if job is None:
+                raise LookupError("Job not found")
+            prior_status = job.status
+            prior_path = job.reference_image_path
+            had_valid = _reference_file_valid(
+                self._storage,
+                job_id,
+                prior_path,
+                max_pixels=self._settings.reference_image_max_pixels,
+            )
+            if prior_status not in {
+                JobStatus.BASE_IMAGE_READY,
+                JobStatus.REFERENCE_READY,
+            }:
+                if prior_status == JobStatus.WAITING_FOR_REFERENCE:
+                    raise PermissionError("Reference upload is already in progress")
+                if prior_status == JobStatus.CHARACTER_EDITING:
+                    raise PermissionError("Cannot replace reference while character editing")
+                if prior_status == JobStatus.CHARACTER_EDIT_READY:
+                    raise PermissionError(
+                        "Cannot replace reference after character edit is ready"
+                    )
+                raise PermissionError("Job is not eligible for reference upload")
+
+            now = utc_now()
+            stmt = (
+                update(GenerationJob)
+                .where(
+                    GenerationJob.id == job_id,
+                    GenerationJob.status.in_(
+                        (JobStatus.BASE_IMAGE_READY, JobStatus.REFERENCE_READY)
+                    ),
+                )
+                .values(
+                    status=JobStatus.WAITING_FOR_REFERENCE,
+                    current_stage=REFERENCE_STAGE,
+                    updated_at=now,
+                )
+            )
+            result = session.execute(stmt)
+            session.commit()
+            if int(result.rowcount or 0) != 1:
+                raise PermissionError("Job is not eligible for reference upload")
+            return UploadClaimResult(
+                prior_status=prior_status,
+                had_valid_reference=had_valid,
+                prior_reference_path=prior_path,
+            )
+
+    def _assert_still_reserved(self, job_id: str) -> None:
+        with self._session_factory() as session:
+            job = session.get(GenerationJob, job_id)
+            if job is None:
+                raise LookupError("Job not found")
+            if job.status != JobStatus.WAITING_FOR_REFERENCE:
+                raise PermissionError("Reference upload reservation was lost")
+
+    def _commit_reference_ready(self, job_id: str) -> None:
+        relative = reference_relative_path(job_id)
+        with self._session_factory() as session:
+            job = session.get(GenerationJob, job_id)
+            if job is None:
+                raise LookupError("Job not found")
+            if job.status != JobStatus.WAITING_FOR_REFERENCE:
+                raise PermissionError("Reference upload reservation was lost")
+            job.status = JobStatus.REFERENCE_READY
+            job.current_stage = REFERENCE_READY_STAGE
+            job.progress_percent = max(job.progress_percent, 40)
+            job.reference_image_path = relative
+            job.error_code = None
+            job.error_message = None
+            job.failed_stage = None
+            job.updated_at = utc_now()
+            if self._before_db_commit_hook is not None:
+                self._before_db_commit_hook()
+            session.commit()
+
+    def _rollback_upload(
+        self,
+        job_id: str,
+        *,
+        claim: UploadClaimResult,
+        paths: dict[str, Path],
+        published_final: bool,
+    ) -> None:
+        try:
+            _restore_reference_files(
+                final=paths["final"],
+                backup=paths["backup"],
+                had_prior_valid=claim.had_valid_reference,
+                published_final=published_final,
+            )
+        except OSError:
+            logger.error(
+                "Reference upload file rollback failed job_id=%s "
+                "error_code=REFERENCE_IMAGE_STORAGE_FAILED",
+                job_id,
+            )
+        _cleanup_artifacts(paths["partial"], paths["staging"], paths["backup"])
+        self._rollback_job_state(job_id, claim=claim)
+
+    def _rollback_job_state(self, job_id: str, *, claim: UploadClaimResult) -> None:
+        with self._session_factory() as session:
+            job = session.get(GenerationJob, job_id)
+            if job is None:
+                return
+            if claim.had_valid_reference:
+                job.status = JobStatus.REFERENCE_READY
+                job.current_stage = REFERENCE_READY_STAGE
+                job.reference_image_path = claim.prior_reference_path
+            else:
+                job.status = JobStatus.BASE_IMAGE_READY
+                job.current_stage = "base_image_ready"
+                job.reference_image_path = None
+            job.updated_at = utc_now()
+            session.commit()
 
     def _stream_upload_to_partial(self, upload: UploadFile, partial: Path) -> None:
         max_bytes = self._settings.reference_image_max_upload_bytes
@@ -186,58 +434,8 @@ class ReferenceUploadService:
             if total == 0:
                 raise ReferenceImageEmptyError()
         except MediaError:
-            self._cleanup_paths(partial)
+            _cleanup_artifacts(partial)
             raise
         except Exception as exc:
-            self._cleanup_paths(partial)
+            _cleanup_artifacts(partial)
             raise ReferenceImageStorageFailedError() from exc
-
-    def _has_valid_reference(self, job_id: str, relative: str | None) -> bool:
-        if not relative:
-            return False
-        try:
-            path = self._storage.resolve_safe(relative)
-            inspect_reference_png(
-                path, max_pixels=self._settings.reference_image_max_pixels
-            )
-            return True
-        except Exception:
-            return False
-
-    def _revert_after_failure(
-        self,
-        job_id: str,
-        *,
-        prior_status: JobStatus,
-        had_valid_reference: bool,
-    ) -> None:
-        with self._session_factory() as session:
-            job = session.get(GenerationJob, job_id)
-            if job is None:
-                return
-            if had_valid_reference and prior_status == JobStatus.REFERENCE_READY:
-                job.status = JobStatus.REFERENCE_READY
-                job.current_stage = REFERENCE_READY_STAGE
-            elif prior_status == JobStatus.BASE_IMAGE_READY or (
-                job.status == JobStatus.WAITING_FOR_REFERENCE and not had_valid_reference
-            ):
-                if job.status == JobStatus.WAITING_FOR_REFERENCE:
-                    try:
-                        assert_can_transition(job.status, JobStatus.BASE_IMAGE_READY)
-                    except Exception:
-                        pass
-                job.status = JobStatus.BASE_IMAGE_READY
-                job.current_stage = "base_image_ready"
-                if not had_valid_reference:
-                    job.reference_image_path = None
-            job.updated_at = utc_now()
-            session.commit()
-
-    @staticmethod
-    def _cleanup_paths(*paths: Path) -> None:
-        for path in paths:
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                logger.error("Failed cleaning reference upload partial")

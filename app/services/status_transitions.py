@@ -36,7 +36,9 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.WAITING_FOR_REFERENCE: frozenset(
         {JobStatus.REFERENCE_READY, JobStatus.BASE_IMAGE_READY, JobStatus.FAILED}
     ),
-    JobStatus.REFERENCE_READY: frozenset({JobStatus.CHARACTER_EDITING}),
+    JobStatus.REFERENCE_READY: frozenset(
+        {JobStatus.CHARACTER_EDITING, JobStatus.WAITING_FOR_REFERENCE}
+    ),
     JobStatus.CHARACTER_EDITING: frozenset(
         {JobStatus.CHARACTER_EDIT_READY, JobStatus.FAILED}
     ),

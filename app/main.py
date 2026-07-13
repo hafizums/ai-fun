@@ -18,7 +18,10 @@ from app.services.character_edit_generation import CharacterEditGenerationServic
 from app.services.image_download import ImageDownloader
 from app.services.job_recovery import recover_interrupted_jobs
 from app.services.prompt_generation import PromptGenerationService
-from app.services.reference_upload import ReferenceUploadService
+from app.services.reference_upload import (
+    ReferenceUploadService,
+    reconcile_waiting_for_reference_jobs,
+)
 from app.services.storage import StorageService
 from app.services.task_runner import TaskRunner
 
@@ -42,6 +45,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             recovered = recover_interrupted_jobs(session)
             if recovered:
                 logger.warning("Marked %s interrupted job(s) as FAILED", recovered)
+            reconciled = reconcile_waiting_for_reference_jobs(
+                session,
+                storage,
+                app_settings,
+            )
+            if reconciled:
+                logger.warning(
+                    "Reconciled %s WAITING_FOR_REFERENCE job(s) after restart",
+                    reconciled,
+                )
 
         runner: TaskRunner = app.state.task_runner
         runner.start()

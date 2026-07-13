@@ -5,10 +5,12 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 from PIL import Image
 from PIL.ExifTags import Base as ExifBase
@@ -17,6 +19,7 @@ from app.models.job import GenerationJob, JobStatus
 from app.providers.media_exceptions import (
     MediaAuthenticationError,
     MediaTimeoutError,
+    ReferenceImageStorageFailedError,
     ReferenceImageTooSmallError,
 )
 from app.services.base_image_generation import BASE_IMAGE_FILENAME
@@ -30,7 +33,14 @@ from app.services.image_normalize import (
     normalize_reference_image,
 )
 from app.services.job_recovery import recover_interrupted_jobs
-from app.services.reference_upload import REFERENCE_FILENAME, reference_relative_path
+from app.services.reference_upload import (
+    REFERENCE_BACKUP_FILENAME,
+    REFERENCE_FILENAME,
+    REFERENCE_NORMALIZE_STAGING,
+    REFERENCE_UPLOAD_PARTIAL,
+    reconcile_waiting_for_reference_jobs,
+    reference_relative_path,
+)
 from app.services.status_transitions import (
     ACTIVE_PROCESSING_STATES,
     InvalidStatusTransitionError,
@@ -67,6 +77,20 @@ def _upload_reference(client: TestClient, job_id: str, data: bytes, filename: st
         f"/api/jobs/{job_id}/reference-image",
         files={"file": (filename, data, "application/octet-stream")},
     )
+
+
+def _upload_file(data: bytes, filename: str = "x.jpg") -> UploadFile:
+    return UploadFile(file=io.BytesIO(data), filename=filename)
+
+
+def _service_upload(app, job_id: str, data: bytes) -> tuple[int, str | None]:
+    try:
+        app.state.reference_upload.upload_reference(job_id, _upload_file(data))
+        return 200, None
+    except PermissionError as exc:
+        return 409, str(exc)
+    except Exception as exc:
+        return 400, str(exc)
 
 
 def _seed_reference_ready(client: TestClient, app) -> str:
@@ -294,6 +318,192 @@ def test_successful_replacement_swaps_file(client, app) -> None:
     assert _upload_reference(client, job_id, new_bytes).status_code == 200
     assert path.read_bytes() != prior
     assert client.get(f"/api/jobs/{job_id}").json()["status"] == "REFERENCE_READY"
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=False)
+    assert not (upload_dir / REFERENCE_BACKUP_FILENAME).exists()
+    assert not (upload_dir / REFERENCE_UPLOAD_PARTIAL).exists()
+    assert not (upload_dir / REFERENCE_NORMALIZE_STAGING).exists()
+
+
+def test_commit_failure_after_publish_restores_prior_reference(client, app) -> None:
+    job_id = _seed_reference_ready(client, app)
+    path = app.state.storage.resolve_safe(
+        client.get(f"/api/jobs/{job_id}").json()["reference_image_path"]
+    )
+    prior_bytes = path.read_bytes()
+    prior_path = client.get(f"/api/jobs/{job_id}").json()["reference_image_path"]
+
+    def fail_commit() -> None:
+        raise ReferenceImageStorageFailedError()
+
+    app.state.reference_upload._before_db_commit_hook = fail_commit
+    resp = _upload_reference(
+        client, job_id, make_portrait_bytes(width=350, height=450, fmt="JPEG")
+    )
+    assert resp.status_code == 400
+    assert path.read_bytes() == prior_bytes
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "REFERENCE_READY"
+    assert job["reference_image_path"] == prior_path
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=False)
+    assert not (upload_dir / REFERENCE_UPLOAD_PARTIAL).exists()
+    assert not (upload_dir / REFERENCE_NORMALIZE_STAGING).exists()
+    assert not (upload_dir / REFERENCE_BACKUP_FILENAME).exists()
+    assert client.get(f"/api/jobs/{job_id}/reference-image").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}/reference-image/file").status_code == 200
+
+
+def test_initial_upload_commit_failure_leaves_no_reference(client, app) -> None:
+    job_id = _seed_base_image_ready(client, app)
+
+    def fail_commit() -> None:
+        raise ReferenceImageStorageFailedError()
+
+    app.state.reference_upload._before_db_commit_hook = fail_commit
+    resp = _upload_reference(client, job_id, make_portrait_bytes(width=400, height=500))
+    assert resp.status_code == 400
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "BASE_IMAGE_READY"
+    assert job["reference_image_path"] is None
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=False)
+    assert not (upload_dir / REFERENCE_FILENAME).exists()
+    assert not (upload_dir / REFERENCE_UPLOAD_PARTIAL).exists()
+    assert not (upload_dir / REFERENCE_NORMALIZE_STAGING).exists()
+    assert not (upload_dir / REFERENCE_BACKUP_FILENAME).exists()
+
+
+def test_concurrent_upload_claim_one_winner(client, app) -> None:
+    job_id = _seed_reference_ready(client, app)
+    path = app.state.storage.resolve_safe(
+        client.get(f"/api/jobs/{job_id}").json()["reference_image_path"]
+    )
+    prior = path.read_bytes()
+    claim_started = threading.Event()
+    release_upload = threading.Event()
+    results: list[int] = []
+    payloads = [
+        make_portrait_bytes(width=300, height=400, fmt="JPEG"),
+        make_portrait_bytes(width=350, height=450, fmt="JPEG"),
+    ]
+
+    def after_claim() -> None:
+        claim_started.set()
+        release_upload.wait(timeout=5)
+
+    app.state.reference_upload._after_claim_hook = after_claim
+    app.state.reference_upload._claim_barrier = threading.Barrier(2)
+
+    def attempt(data: bytes) -> None:
+        status, _ = _service_upload(app, job_id, data)
+        results.append(status)
+
+    t1 = threading.Thread(target=attempt, args=(payloads[0],))
+    t2 = threading.Thread(target=attempt, args=(payloads[1],))
+    t1.start()
+    t2.start()
+    claim_started.wait(timeout=5)
+    deadline = time.time() + 5
+    while time.time() < deadline and len(results) < 2:
+        if len(results) == 1 and results[0] == 409:
+            break
+        time.sleep(0.01)
+    assert 409 in results
+    release_upload.set()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    assert sorted(results) == [200, 409]
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "REFERENCE_READY"
+    with Image.open(path) as img:
+        assert img.format == "PNG"
+        assert img.size in {(300, 400), (350, 450)}
+    assert path.read_bytes() != prior
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=False)
+    assert not (upload_dir / REFERENCE_UPLOAD_PARTIAL).exists()
+    assert not (upload_dir / REFERENCE_NORMALIZE_STAGING).exists()
+    assert not (upload_dir / REFERENCE_BACKUP_FILENAME).exists()
+
+
+def test_edit_rejected_during_reserved_upload(client, app) -> None:
+    job_id = _seed_reference_ready(client, app)
+    reserved = threading.Event()
+    continue_upload = threading.Event()
+
+    def after_claim() -> None:
+        reserved.set()
+        continue_upload.wait(timeout=5)
+
+    app.state.reference_upload._after_claim_hook = after_claim
+    upload_result: dict[str, int] = {}
+
+    def do_upload() -> None:
+        status, _ = _service_upload(
+            app, job_id, make_portrait_bytes(width=380, height=520, fmt="JPEG")
+        )
+        upload_result["status"] = status
+
+    thread = threading.Thread(target=do_upload)
+    thread.start()
+    reserved.wait(timeout=5)
+    edit_resp = client.post(f"/api/jobs/{job_id}/generate-character-edit")
+    assert edit_resp.status_code == 409
+    continue_upload.set()
+    thread.join(timeout=10)
+    assert upload_result["status"] == 200
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "REFERENCE_READY"
+    edit_after = client.post(f"/api/jobs/{job_id}/generate-character-edit")
+    assert edit_after.status_code == 202
+
+
+def test_upload_rejected_during_character_editing(client, app) -> None:
+    job_id = _seed_reference_ready(client, app)
+    path = app.state.storage.resolve_safe(
+        client.get(f"/api/jobs/{job_id}").json()["reference_image_path"]
+    )
+    prior_bytes = path.read_bytes()
+    app.state.character_edit_generation.accept_generation(job_id)
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "CHARACTER_EDITING"
+    resp = _upload_reference(client, job_id, make_portrait_bytes(width=360, height=480))
+    assert resp.status_code == 409
+    assert path.read_bytes() == prior_bytes
+
+
+def test_restart_reconcile_reference_ready_when_valid_file(client, app, session_factory) -> None:
+    job_id = _seed_reference_ready(client, app)
+    set_job_status(session_factory, job_id, JobStatus.WAITING_FOR_REFERENCE)
+    with session_factory() as session:
+        count = reconcile_waiting_for_reference_jobs(
+            session, app.state.storage, app.state.settings
+        )
+    assert count == 1
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "REFERENCE_READY"
+
+
+def test_restart_reconcile_base_image_when_no_valid_reference(client, app, session_factory) -> None:
+    job_id = _seed_base_image_ready(client, app)
+    set_job_status(session_factory, job_id, JobStatus.WAITING_FOR_REFERENCE)
+    with session_factory() as session:
+        count = reconcile_waiting_for_reference_jobs(
+            session, app.state.storage, app.state.settings
+        )
+    assert count == 1
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "BASE_IMAGE_READY"
+    assert job["reference_image_path"] is None
+
+
+def test_atomic_claim_from_base_image_ready(client, app) -> None:
+    job_id = _seed_base_image_ready(client, app)
+    resp = _upload_reference(client, job_id, make_portrait_bytes(width=400, height=500))
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "REFERENCE_READY"
+
+
+def test_atomic_replacement_claim_from_reference_ready(client, app) -> None:
+    job_id = _seed_reference_ready(client, app)
+    resp = _upload_reference(
+        client, job_id, make_portrait_bytes(width=360, height=480, fmt="JPEG")
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "REFERENCE_READY"
 
 
 def test_reference_endpoints_missing_renamed_500(client, app) -> None:
