@@ -106,6 +106,6 @@ Concurrent claim: `test_concurrent_claim_enqueues_once` — passed (barrier; exa
 
 ## Git information
 
-- Implementation commit: *(filled after commit)*
-- Final HEAD: *(filled after commit)*
-- Final Git status: *(filled after push)*
+- Implementation commit: `d566f6522f90a9b49880fd77ebf872aa53a18bb6`
+- Final HEAD: *(updated after this report commit)*
+- Final Git status: *(updated after push)*
