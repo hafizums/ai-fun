@@ -63,10 +63,23 @@ On replacement failure after backup move: restore backup → final, revert statu
 
 On startup, `reconcile_waiting_for_reference_jobs()`:
 
-- Removes stale upload/staging/backup artifacts
-- If valid final + path → `REFERENCE_READY`
-- Otherwise → `BASE_IMAGE_READY`, clear path, remove invalid final
-- If backup exists without valid final, restores backup to final when possible
+- **Backup-authoritative rule:** if `reference_image.backup.png` exists and validates, treat it as evidence of an interrupted replacement. Restore backup → final even when the current final is also a valid PNG (uncommitted candidate). Discard the candidate.
+- Validate restored final before committing `REFERENCE_READY`.
+- Remove upload/staging artifacts; delete backup only after successful restore validation.
+- If restore fails: keep `WAITING_FOR_REFERENCE`, preserve backup when possible, set `REFERENCE_IMAGE_STORAGE_FAILED` — never falsely mark ready.
+- Invalid backup: do not discard a valid final; drop only the bad backup.
+- No backup + valid final → `REFERENCE_READY`.
+- No backup + no valid final → `BASE_IMAGE_READY`, clear path, remove invalid final.
+
+Interrupted replacement state covered:
+
+```text
+status = WAITING_FOR_REFERENCE
+reference_image.png = valid new candidate
+reference_image.backup.png = valid prior reference
+```
+
+Recovery sequence: validate backup → remove candidate → `os.replace(backup, final)` → validate restored final → commit `REFERENCE_READY` → remove partial/staging.
 
 ## Edit model configuration
 
@@ -114,8 +127,8 @@ Public SDK only: `Client.upload`, `Client.run`. Media base URL: `WAVESPEED_API_B
 ## Tests
 
 - Commands: `pytest -q`; `ruff check app tests`
-- Total: 222
-- Passed: 222
+- Total: 227
+- Passed: 227
 - Failed: 0
 - Skipped: 0
 - Warnings: 1 (Starlette TestClient deprecation)
@@ -128,6 +141,14 @@ Upload/edit race: `test_edit_rejected_during_reserved_upload`, `test_upload_reje
 
 Rollback: commit-failure and post-publication restore tests — passed.
 
+Backup-authoritative restart tests:
+
+- `test_restart_reconcile_backup_authoritative_over_new_final`
+- `test_restart_reconcile_backup_restores_when_final_missing`
+- `test_restart_reconcile_backup_restores_when_final_corrupt`
+- `test_restart_reconcile_backup_restore_failure_keeps_waiting`
+- `test_startup_invokes_reference_reconciliation`
+
 ## Format-validation correction (Gate 4)
 
 Correction starting HEAD: `5a1632a5bbb37c738997600badfebdf7fe81da28`.
@@ -139,6 +160,16 @@ Reference replacement used `os.replace(staging, final)` before DB commit without
 ### Correction
 
 Atomic upload claim, backup/rollback publication, DB commit after file publish, startup reconciliation, and concurrency/race regression tests.
+
+### Follow-up finding (backup-authoritative restart)
+
+Starting HEAD: `2c4c60cf6b90d4069dc417c19de07065a4213caa`.
+
+Startup reconciliation preferred a valid uncommitted candidate final over a valid backup, then deleted the backup — permanently discarding the prior reference after an interrupted replacement crash.
+
+### Follow-up correction
+
+When a valid backup exists for `WAITING_FOR_REFERENCE`, always restore it over the candidate final before marking `REFERENCE_READY`.
 
 ## Manual live smoke test
 
@@ -173,5 +204,6 @@ Atomic upload claim, backup/rollback publication, DB commit after file publish, 
 
 - Implementation commit: `c9788ad146e87429ab66ca0198092a51ce327d06`
 - Correction commit: `96c41c865f843434bab25cc859fd49cdf2e0fd24`
-- Final HEAD: `c9883ee961745cea63a15a934d389eb55955ace3`
-- Final Git status: clean working tree on `master`, synced with `origin/master`
+- Backup-authoritative restart correction: *(filled after commit)*
+- Final HEAD: _(docs follow-up may trail)_
+- Final Git status: clean working tree on `master` after Gate 4 corrections

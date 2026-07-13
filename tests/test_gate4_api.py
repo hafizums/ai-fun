@@ -490,6 +490,131 @@ def test_restart_reconcile_base_image_when_no_valid_reference(client, app, sessi
     assert job["reference_image_path"] is None
 
 
+def test_restart_reconcile_backup_authoritative_over_new_final(
+    client, app, session_factory
+) -> None:
+    """Interrupted replacement: valid new final + valid backup → restore backup."""
+    job_id = _seed_reference_ready(client, app)
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=True)
+    final = upload_dir / REFERENCE_FILENAME
+    backup = upload_dir / REFERENCE_BACKUP_FILENAME
+    prior_bytes = make_portrait_bytes(width=300, height=500)
+    candidate_bytes = make_portrait_bytes(width=400, height=600)
+    assert prior_bytes != candidate_bytes
+    # Simulate: prior moved to backup, uncommitted candidate published as final.
+    backup.write_bytes(prior_bytes)
+    final.write_bytes(candidate_bytes)
+    (upload_dir / REFERENCE_UPLOAD_PARTIAL).write_bytes(b"partial")
+    (upload_dir / REFERENCE_NORMALIZE_STAGING).write_bytes(b"staging")
+    set_job_status(session_factory, job_id, JobStatus.WAITING_FOR_REFERENCE)
+    with session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.reference_image_path = reference_relative_path(job_id)
+        session.commit()
+        count = reconcile_waiting_for_reference_jobs(
+            session, app.state.storage, app.state.settings
+        )
+    assert count == 1
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert body["status"] == "REFERENCE_READY"
+    assert body["reference_image_path"] == reference_relative_path(job_id)
+    assert final.read_bytes() == prior_bytes
+    assert not backup.exists()
+    assert not (upload_dir / REFERENCE_UPLOAD_PARTIAL).exists()
+    assert not (upload_dir / REFERENCE_NORMALIZE_STAGING).exists()
+
+
+def test_restart_reconcile_backup_restores_when_final_missing(
+    client, app, session_factory
+) -> None:
+    job_id = _seed_reference_ready(client, app)
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=True)
+    final = upload_dir / REFERENCE_FILENAME
+    backup = upload_dir / REFERENCE_BACKUP_FILENAME
+    prior_bytes = final.read_bytes()
+    backup.write_bytes(prior_bytes)
+    final.unlink()
+    set_job_status(session_factory, job_id, JobStatus.WAITING_FOR_REFERENCE)
+    with session_factory() as session:
+        count = reconcile_waiting_for_reference_jobs(
+            session, app.state.storage, app.state.settings
+        )
+    assert count == 1
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "REFERENCE_READY"
+    assert final.read_bytes() == prior_bytes
+    assert not backup.exists()
+
+
+def test_restart_reconcile_backup_restores_when_final_corrupt(
+    client, app, session_factory
+) -> None:
+    job_id = _seed_reference_ready(client, app)
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=True)
+    final = upload_dir / REFERENCE_FILENAME
+    backup = upload_dir / REFERENCE_BACKUP_FILENAME
+    prior_bytes = make_portrait_bytes(width=320, height=480)
+    backup.write_bytes(prior_bytes)
+    final.write_bytes(b"not-a-png")
+    set_job_status(session_factory, job_id, JobStatus.WAITING_FOR_REFERENCE)
+    with session_factory() as session:
+        count = reconcile_waiting_for_reference_jobs(
+            session, app.state.storage, app.state.settings
+        )
+    assert count == 1
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "REFERENCE_READY"
+    assert final.read_bytes() == prior_bytes
+    assert not backup.exists()
+
+
+def test_restart_reconcile_backup_restore_failure_keeps_waiting(
+    client, app, session_factory, monkeypatch
+) -> None:
+    job_id = _seed_reference_ready(client, app)
+    upload_dir = app.state.storage.upload_job_directory(job_id, create=True)
+    final = upload_dir / REFERENCE_FILENAME
+    backup = upload_dir / REFERENCE_BACKUP_FILENAME
+    prior_bytes = make_portrait_bytes(width=300, height=500)
+    candidate_bytes = make_portrait_bytes(width=400, height=600)
+    backup.write_bytes(prior_bytes)
+    final.write_bytes(candidate_bytes)
+    set_job_status(session_factory, job_id, JobStatus.WAITING_FOR_REFERENCE)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("simulated restore failure")
+
+    monkeypatch.setattr("app.services.reference_upload.os.replace", boom)
+    with session_factory() as session:
+        count = reconcile_waiting_for_reference_jobs(
+            session, app.state.storage, app.state.settings
+        )
+    assert count == 1
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert body["status"] == "WAITING_FOR_REFERENCE"
+    assert body["error_code"] == "REFERENCE_IMAGE_STORAGE_FAILED"
+    assert backup.exists()
+    assert backup.read_bytes() == prior_bytes
+
+
+def test_startup_invokes_reference_reconciliation(tmp_env, monkeypatch) -> None:
+    called: list[int] = []
+
+    def fake_reconcile(session, storage, settings):
+        called.append(1)
+        return 0
+
+    monkeypatch.setattr(
+        "app.main.reconcile_waiting_for_reference_jobs",
+        fake_reconcile,
+    )
+    from app.main import create_app
+
+    application = create_app(settings=tmp_env)
+    with TestClient(application):
+        pass
+    assert called == [1]
+
+
 def test_atomic_claim_from_base_image_ready(client, app) -> None:
     job_id = _seed_base_image_ready(client, app)
     resp = _upload_reference(client, job_id, make_portrait_bytes(width=400, height=500))

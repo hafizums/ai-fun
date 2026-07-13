@@ -130,12 +130,25 @@ def _restore_reference_files(
         final.unlink()
 
 
+def _path_valid_png(path: Path, *, max_pixels: int) -> bool:
+    try:
+        inspect_reference_png(path, max_pixels=max_pixels)
+        return True
+    except Exception:
+        return False
+
+
 def reconcile_waiting_for_reference_jobs(
     session: Session,
     storage: StorageService,
     settings: Settings,
 ) -> int:
-    """Restore idle status after a crash left jobs in WAITING_FOR_REFERENCE."""
+    """Restore idle status after a crash left jobs in WAITING_FOR_REFERENCE.
+
+    A present ``reference_image.backup.png`` is authoritative evidence of an
+    interrupted replacement. When that backup validates, it is restored even if
+    the current final is also a valid PNG (an uncommitted candidate).
+    """
     jobs = (
         session.query(GenerationJob)
         .filter(GenerationJob.status == JobStatus.WAITING_FOR_REFERENCE)
@@ -145,40 +158,79 @@ def reconcile_waiting_for_reference_jobs(
         return 0
 
     reconciled = 0
+    max_pixels = settings.reference_image_max_pixels
     for job in jobs:
         upload_dir = storage.upload_job_directory(job.id, create=False)
         paths = reference_paths(upload_dir)
         final = paths["final"]
         backup = paths["backup"]
+        relative = reference_relative_path(job.id)
+        restore_failed = False
 
-        if backup.is_file() and not _reference_file_valid(
-            storage,
-            job.id,
-            job.reference_image_path,
-            max_pixels=settings.reference_image_max_pixels,
-        ):
-            try:
-                if final.exists():
-                    final.unlink()
-                os.replace(backup, final)
-            except OSError:
+        if backup.is_file():
+            if _path_valid_png(backup, max_pixels=max_pixels):
+                try:
+                    if final.exists():
+                        final.unlink()
+                    os.replace(backup, final)
+                    if not _path_valid_png(final, max_pixels=max_pixels):
+                        restore_failed = True
+                        logger.error(
+                            "Reference restart restored file invalid "
+                            "job_id=%s error_code=REFERENCE_IMAGE_STORAGE_FAILED",
+                            job.id,
+                        )
+                except OSError:
+                    restore_failed = True
+                    logger.error(
+                        "Reference restart restore failed job_id=%s "
+                        "error_code=REFERENCE_IMAGE_STORAGE_FAILED",
+                        job.id,
+                    )
+            else:
+                # Invalid backup: keep a valid final; drop only the bad backup.
                 logger.error(
-                    "Reference restart restore failed job_id=%s "
+                    "Reference restart found invalid backup job_id=%s "
                     "error_code=REFERENCE_IMAGE_STORAGE_FAILED",
                     job.id,
                 )
+                if not restore_failed:
+                    _cleanup_artifacts(backup)
 
-        _cleanup_artifacts(paths["partial"], paths["staging"], paths["backup"])
+        _cleanup_artifacts(paths["partial"], paths["staging"])
+        # Successful os.replace moves backup away; remove any leftover only after
+        # a completed restore path (not after restore_failed).
+        if not restore_failed and backup.is_file():
+            _cleanup_artifacts(backup)
+
+        if restore_failed:
+            # Keep backup if present; do not falsely mark REFERENCE_READY.
+            job.status = JobStatus.WAITING_FOR_REFERENCE
+            job.current_stage = REFERENCE_STAGE
+            job.error_code = "REFERENCE_IMAGE_STORAGE_FAILED"
+            job.error_message = SAFE_ERROR_MESSAGES["REFERENCE_IMAGE_STORAGE_FAILED"]
+            job.updated_at = utc_now()
+            reconciled += 1
+            logger.warning(
+                "Reconciled WAITING_FOR_REFERENCE job_id=%s status=%s "
+                "error_code=REFERENCE_IMAGE_STORAGE_FAILED",
+                job.id,
+                job.status.value,
+            )
+            continue
 
         if _reference_file_valid(
             storage,
             job.id,
-            reference_relative_path(job.id),
-            max_pixels=settings.reference_image_max_pixels,
+            relative,
+            max_pixels=max_pixels,
         ):
             job.status = JobStatus.REFERENCE_READY
             job.current_stage = REFERENCE_READY_STAGE
-            job.reference_image_path = reference_relative_path(job.id)
+            job.reference_image_path = relative
+            job.error_code = None
+            job.error_message = None
+            job.failed_stage = None
         else:
             job.status = JobStatus.BASE_IMAGE_READY
             job.current_stage = "base_image_ready"
