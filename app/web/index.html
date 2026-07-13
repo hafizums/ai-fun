@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>AI Fun Motion</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <h1>AI Fun Motion</h1>
+        <p>Local workflow: prompts → images → motion → final video</p>
+      </div>
+      <div class="header-status" aria-label="System status">
+        <span class="chip" id="health-chip" data-tone="warn">
+          <span class="chip-dot" aria-hidden="true"></span>
+          <span id="health-label">Checking…</span>
+        </span>
+        <span class="chip" id="provider-chip" data-tone="warn">
+          <span class="chip-dot" aria-hidden="true"></span>
+          <span id="provider-label">Provider…</span>
+        </span>
+      </div>
+      <div class="header-actions">
+        <button type="button" class="btn btn-primary" id="btn-new-project">
+          New project
+        </button>
+        <button type="button" class="btn" id="btn-recent" aria-expanded="false">
+          Recent projects
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <p class="live" id="live-region" aria-live="polite"></p>
+
+      <ol class="stepper" id="stepper" aria-label="Workflow progress"></ol>
+
+      <section class="workspace">
+        <section class="panel" aria-labelledby="preview-heading">
+          <h2 id="preview-heading">Preview</h2>
+          <div class="preview-canvas" id="preview-canvas">
+            <div class="empty-state" id="empty-state">
+              <h3>Create a project to begin</h3>
+              <p>
+                Each paid stage requires an explicit click. The backend owns
+                eligibility, retries, and artifacts.
+              </p>
+              <button type="button" class="btn btn-primary" id="btn-create-empty">
+                Create new project
+              </button>
+            </div>
+          </div>
+          <div class="meta-row" id="preview-meta"></div>
+        </section>
+
+        <aside class="panel action-panel" aria-labelledby="action-heading">
+          <h2 id="action-heading">Actions</h2>
+          <p class="help" id="action-help">
+            Start a project to unlock the next step.
+          </p>
+          <div class="progress-wrap hidden" id="progress-wrap">
+            <label for="job-progress">Progress</label>
+            <progress id="job-progress" max="100" value="0"></progress>
+          </div>
+          <div id="error-panel" class="error-box hidden" role="alert"></div>
+          <div id="action-body"></div>
+          <p class="job-id" id="job-id-line" hidden></p>
+        </aside>
+      </section>
+
+      <section class="panel artifacts" aria-labelledby="artifacts-heading">
+        <h2 id="artifacts-heading">Artifacts</h2>
+        <div class="artifact-grid" id="artifact-grid"></div>
+      </section>
+
+      <section class="panel recent hidden" id="recent-section" aria-labelledby="recent-heading">
+        <h2 id="recent-heading">Recent projects</h2>
+        <div class="recent-grid" id="recent-grid"></div>
+        <button type="button" class="btn" id="btn-load-more" hidden>
+          Load more
+        </button>
+      </section>
+    </main>
+
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirm-ok">
+          Continue
+        </button>
+      </div>
+    </dialog>
+
+    <dialog id="delete-dialog" aria-labelledby="delete-title">
+      <h2 id="delete-title">Delete project?</h2>
+      <p>
+        This removes the project and its local generated files. Active jobs
+        cannot be deleted.
+      </p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="delete-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="delete-ok">Delete</button>
+      </div>
+    </dialog>
+
+    <script src="/static/workflow.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

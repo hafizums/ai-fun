@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import health, jobs
+from app.api import health, jobs, ui
 from app.api import settings as settings_api
 from app.config import Settings, get_settings
 from app.db import create_db_engine, create_session_factory, init_db
@@ -80,9 +80,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="AI Fun Motion",
         description=(
             "Local personal-use AI video transformation "
-            "(Gate 7: local transition + final assembly)"
+            "(Gate 8: local web UI over FastAPI workflow)"
         ),
-        version="0.7.0",
+        version="0.8.0",
         lifespan=lifespan,
     )
 
@@ -187,6 +187,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(jobs.router)
     app.include_router(settings_api.router)
+    app.include_router(ui.router)
+    ui.security_headers_middleware(app)
+    ui.mount_static(app)
 
     return app
 
