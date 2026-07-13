@@ -162,4 +162,5 @@ Reuses existing `source_video_url`. No new columns. No database reset.
 
 - Correction starting HEAD: `05b54105e8da8f234c4cb484d3ca6da63f2372de`
 - Prior Gate 5 implementation commit: `0c173326f252b4b007db216e99dbb30bbcc18f47`
-- Correction / Final HEAD: *(filled after commit)*
+- Correction commit: `240460f143921a92e5f62845bdd7fefa2699b366`
+- Final HEAD: `240460f143921a92e5f62845bdd7fefa2699b366`
