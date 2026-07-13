@@ -133,5 +133,5 @@ Reuses existing `source_video_url`. No new columns. No database reset.
 ## Git information
 
 - Starting commit: `fc520a632d97eca4186b870d606699a8b21794c4`
-- Implementation commit: *(filled after commit)*
-- Final HEAD: *(filled after commit)*
+- Implementation commit: `0c173326f252b4b007db216e99dbb30bbcc18f47`
+- Final HEAD: `0c173326f252b4b007db216e99dbb30bbcc18f47` (updated if a report-only follow-up lands)
