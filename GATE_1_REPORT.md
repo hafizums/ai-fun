@@ -99,5 +99,5 @@ Coverage includes all Gate 1 required scenarios (health, storage safety, jobs CR
 
 ## Git information
 
-* Final commit hash: _(filled after commit)_
-* Final Git status: _(filled after commit)_
+* Final commit hash: `f954b5b6023989bda5e029dca2409f6a13035fc7` (report finalized in follow-up docs commit)
+* Final Git status: clean working tree on `master`
