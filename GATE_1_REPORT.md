@@ -110,5 +110,5 @@ Coverage includes Gate 1 scenarios plus finding fixes: formatted traceback secre
 ## Git information
 
 * Correction starting HEAD: `b46d8fd455e0dd69fa289239a92e7d10e843d4ec`
-* Final commit hash: _(filled after commit)_
-* Final Git status: _(filled after commit)_
+* Final commit hash: `1f7336e15cc7c3275a48767cc66cd47766641674`
+* Final Git status: clean working tree on `master` (report hash note may trail in a docs-only follow-up)
