@@ -32,7 +32,7 @@ from app.services.base_image_generation import (
     BaseImageGenerationService,
 )
 from app.services.image_download import ImageDownloader
-from app.services.image_normalize import normalize_base_image
+from app.services.image_normalize import inspect_local_png, normalize_base_image
 from app.services.prompt_generation import canonical_prompt_json
 from tests.conftest import set_job_status
 from tests.fakes import wait_for_job_status
@@ -359,7 +359,7 @@ def test_animated_landscape_wrong_ratio_excessive_pixels_rejected(tmp_path: Path
     final = tmp_path / "out.png"
     animated = tmp_path / "a.gif"
     animated.write_bytes(make_portrait_bytes(fmt="GIF", animated=True))
-    with pytest.raises((BaseImageInvalidFileError, BaseImageInvalidAspectRatioError)):
+    with pytest.raises(BaseImageInvalidFileError):
         normalize_base_image(animated, final, max_pixels=25_000_000)
 
     landscape = tmp_path / "land.jpg"
@@ -378,7 +378,15 @@ def test_animated_landscape_wrong_ratio_excessive_pixels_rejected(tmp_path: Path
         normalize_base_image(small, final, max_pixels=10)
 
 
-def test_jpeg_and_webp_normalized_to_png(tmp_path: Path) -> None:
+def test_png_jpeg_webp_normalize_to_genuine_png(tmp_path: Path) -> None:
+    png = tmp_path / "in.png"
+    png.write_bytes(make_portrait_bytes(fmt="PNG"))
+    out_png = tmp_path / "out_png.png"
+    info = normalize_base_image(png, out_png, max_pixels=25_000_000)
+    assert info.format == "PNG"
+    with Image.open(out_png) as img:
+        assert img.format == "PNG"
+
     jpeg = tmp_path / "in.jpg"
     jpeg.write_bytes(make_portrait_bytes(fmt="JPEG"))
     out = tmp_path / "out.png"
@@ -392,12 +400,73 @@ def test_jpeg_and_webp_normalized_to_png(tmp_path: Path) -> None:
     try:
         webp = tmp_path / "in.webp"
         webp.write_bytes(make_portrait_bytes(fmt="WEBP"))
-        out2 = tmp_path / "out2.png"
-        normalize_base_image(webp, out2, max_pixels=25_000_000)
-        assert out2.is_file()
     except Exception:
-        # Pillow may lack webp support in some builds; skip soft-fail only for webp encode.
         pytest.skip("WEBP encode not supported by this Pillow build")
+    out2 = tmp_path / "out2.png"
+    normalize_base_image(webp, out2, max_pixels=25_000_000)
+    assert out2.is_file()
+    with Image.open(out2) as img:
+        assert img.format == "PNG"
+
+
+def test_unsupported_source_formats_rejected(tmp_path: Path) -> None:
+    final = tmp_path / "out.png"
+    for fmt, name in (("GIF", "static.gif"), ("BMP", "in.bmp"), ("TIFF", "in.tiff")):
+        source = tmp_path / name
+        source.write_bytes(make_portrait_bytes(fmt=fmt))
+        with pytest.raises(BaseImageInvalidFileError):
+            normalize_base_image(source, final, max_pixels=25_000_000)
+        assert not final.exists()
+
+
+def test_inspect_local_png_requires_genuine_png(tmp_path: Path) -> None:
+    good = tmp_path / "base_image.png"
+    good.write_bytes(make_portrait_bytes(fmt="PNG"))
+    info = inspect_local_png(good, max_pixels=25_000_000)
+    assert info.format == "PNG"
+    assert info.width > 0 and info.height > 0
+
+    renamed_jpeg = tmp_path / "jpeg_as.png"
+    renamed_jpeg.write_bytes(make_portrait_bytes(fmt="JPEG"))
+    with pytest.raises(BaseImageInvalidFileError):
+        inspect_local_png(renamed_jpeg, max_pixels=25_000_000)
+
+    try:
+        webp_bytes = make_portrait_bytes(fmt="WEBP")
+    except Exception:
+        webp_bytes = None
+    if webp_bytes is not None:
+        renamed_webp = tmp_path / "webp_as.png"
+        renamed_webp.write_bytes(webp_bytes)
+        with pytest.raises(BaseImageInvalidFileError):
+            inspect_local_png(renamed_webp, max_pixels=25_000_000)
+
+    renamed_gif = tmp_path / "gif_as.png"
+    renamed_gif.write_bytes(make_portrait_bytes(fmt="GIF"))
+    with pytest.raises(BaseImageInvalidFileError):
+        inspect_local_png(renamed_gif, max_pixels=25_000_000)
+
+    trunc = tmp_path / "trunc.png"
+    trunc.write_bytes(make_portrait_bytes(fmt="PNG")[:40])
+    with pytest.raises(BaseImageInvalidFileError):
+        inspect_local_png(trunc, max_pixels=25_000_000)
+
+    wrong_ratio = tmp_path / "wrong.png"
+    wrong_ratio.write_bytes(make_portrait_bytes(width=500, height=1000, fmt="PNG"))
+    with pytest.raises(BaseImageInvalidAspectRatioError):
+        inspect_local_png(wrong_ratio, max_pixels=25_000_000)
+
+
+def _mark_ready_with_bytes(app, job_id: str, data: bytes) -> Path:
+    set_job_status(app.state.session_factory, job_id, JobStatus.BASE_IMAGE_READY)
+    with app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.base_image_url = f"/api/jobs/{job_id}/base-image/file"
+        session.commit()
+    path = app.state.storage.job_directory(job_id, create=True) / BASE_IMAGE_FILENAME
+    path.write_bytes(data)
+    return path
 
 
 def test_missing_and_corrupt_ready_file_500(client: TestClient, app) -> None:
@@ -414,6 +483,42 @@ def test_missing_and_corrupt_ready_file_500(client: TestClient, app) -> None:
     path = app.state.storage.job_directory(job_id, create=True) / BASE_IMAGE_FILENAME
     path.write_bytes(b"corrupt")
     assert client.get(f"/api/jobs/{job_id}/base-image").status_code == 500
+
+
+def test_inconsistent_ready_artifacts_return_500(client: TestClient, app) -> None:
+    cases: list[bytes] = [
+        make_portrait_bytes(fmt="JPEG"),
+        make_portrait_bytes(fmt="GIF"),
+        make_portrait_bytes(fmt="PNG")[:40],
+        make_portrait_bytes(width=500, height=1000, fmt="PNG"),
+    ]
+    try:
+        cases.append(make_portrait_bytes(fmt="WEBP"))
+    except Exception:
+        pass
+
+    for data in cases:
+        job_id = _seed_prompt_ready(client, app)
+        _mark_ready_with_bytes(app, job_id, data)
+        meta = client.get(f"/api/jobs/{job_id}/base-image")
+        file_resp = client.get(f"/api/jobs/{job_id}/base-image/file")
+        assert meta.status_code == 500
+        assert file_resp.status_code == 500
+        assert file_resp.headers.get("content-type", "").split(";")[0] != "image/png"
+
+
+def test_valid_ready_png_endpoints_200(client: TestClient, app) -> None:
+    job_id = _seed_prompt_ready(client, app)
+    client.post(f"/api/jobs/{job_id}/generate-base-image")
+    wait_for_job_status(client, job_id, {"BASE_IMAGE_READY"})
+    meta = client.get(f"/api/jobs/{job_id}/base-image")
+    assert meta.status_code == 200
+    assert meta.json()["format"] == "PNG"
+    file_resp = client.get(f"/api/jobs/{job_id}/base-image/file")
+    assert file_resp.status_code == 200
+    assert file_resp.headers["content-type"].startswith("image/png")
+    with Image.open(io.BytesIO(file_resp.content)) as img:
+        assert img.format == "PNG"
 
 
 def test_file_endpoint_rejects_non_ready(client: TestClient, app) -> None:

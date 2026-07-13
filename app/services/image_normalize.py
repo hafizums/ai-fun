@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 TARGET_RATIO = 9 / 16
 RATIO_TOLERANCE = 0.03
 
+# Provider download inputs may be PNG, JPEG, or WebP only; all normalize to PNG.
+APPROVED_SOURCE_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG", "WEBP"})
+
 
 @dataclass(frozen=True)
 class NormalizedImageInfo:
@@ -40,6 +43,21 @@ def _is_approx_nine_sixteen(width: int, height: int) -> bool:
     return lower <= ratio <= upper
 
 
+def _reject_animated(img: Image.Image) -> None:
+    """Raise BaseImageInvalidFileError if the image has more than one frame."""
+    try:
+        n_frames = getattr(img, "n_frames", 1)
+        if int(n_frames) > 1:
+            raise BaseImageInvalidFileError()
+        for frame_idx, _frame in enumerate(ImageSequence.Iterator(img)):
+            if frame_idx > 0:
+                raise BaseImageInvalidFileError()
+    except BaseImageInvalidFileError:
+        raise
+    except Exception:
+        pass
+
+
 def normalize_base_image(
     source_path: Path,
     final_path: Path,
@@ -53,19 +71,9 @@ def normalize_base_image(
             partial.unlink()
         try:
             with Image.open(source_path) as img:
-                # Reject animated sequences.
-                try:
-                    n_frames = getattr(img, "n_frames", 1)
-                    if int(n_frames) > 1:
-                        raise BaseImageInvalidFileError()
-                    # Seek through frames if present.
-                    for _frame_idx, _frame in enumerate(ImageSequence.Iterator(img)):
-                        if _frame_idx > 0:
-                            raise BaseImageInvalidFileError()
-                except BaseImageInvalidFileError:
-                    raise
-                except Exception:
-                    pass
+                if img.format not in APPROVED_SOURCE_FORMATS:
+                    raise BaseImageInvalidFileError()
+                _reject_animated(img)
 
                 width, height = img.size
                 if width <= 0 or height <= 0:
@@ -115,19 +123,26 @@ def normalize_base_image(
 
 
 def inspect_local_png(path: Path, *, max_pixels: int) -> NormalizedImageInfo:
-    """Inspect an already-published local PNG for metadata endpoints."""
+    """Inspect an already-published local PNG for metadata and file endpoints.
+
+    Requires Pillow to identify the file as PNG. A JPEG/WebP/GIF renamed to
+    ``.png`` is rejected. Truncated or incomplete PNG data is rejected via a
+    full pixel load.
+    """
     if not path.is_file():
         raise BaseImageInvalidFileError()
     try:
         with Image.open(path) as img:
+            if img.format != "PNG":
+                raise BaseImageInvalidFileError()
+            _reject_animated(img)
+            # Fully decode pixels so truncated / incomplete PNGs fail here.
+            img.load()
             width, height = img.size
             if width <= 0 or height <= 0:
                 raise BaseImageInvalidFileError()
             if width * height > max_pixels:
                 raise BaseImageInvalidFileError()
-            if img.format not in {None, "PNG"} and path.suffix.lower() == ".png":
-                # Still accept if Pillow can read it as the stored PNG path.
-                pass
             if not _is_approx_nine_sixteen(width, height):
                 raise BaseImageInvalidAspectRatioError()
         size_bytes = path.stat().st_size
