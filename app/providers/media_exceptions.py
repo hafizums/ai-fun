@@ -212,3 +212,48 @@ class ControlVideoInvalidDimensionsError(MediaError):
 class ControlVideoInvalidFrameRateError(MediaError):
     code = "CONTROL_VIDEO_INVALID_FRAME_RATE"
     public_message = "The controlled video frame rate is invalid."
+
+
+class ControlVideoMissingOrInvalidError(MediaError):
+    code = "CONTROL_VIDEO_MISSING_OR_INVALID"
+    public_message = "The controlled video is missing or invalid."
+
+
+class VideoInputDurationMismatchError(MediaError):
+    code = "VIDEO_INPUT_DURATION_MISMATCH"
+    public_message = "The source and controlled videos have incompatible durations."
+
+
+class VideoInputDimensionMismatchError(MediaError):
+    code = "VIDEO_INPUT_DIMENSION_MISMATCH"
+    public_message = "The source and controlled videos have incompatible dimensions."
+
+
+class TransitionAnalysisFailedError(MediaError):
+    code = "TRANSITION_ANALYSIS_FAILED"
+    public_message = "Transition analysis failed."
+
+
+class FinalVideoAssemblyFailedError(MediaError):
+    code = "FINAL_VIDEO_ASSEMBLY_FAILED"
+    public_message = "Failed to assemble the final video."
+
+
+class FinalVideoInvalidFileError(MediaError):
+    code = "FINAL_VIDEO_INVALID_FILE"
+    public_message = "The final video file is invalid."
+
+
+class FinalVideoInvalidDurationError(MediaError):
+    code = "FINAL_VIDEO_INVALID_DURATION"
+    public_message = "The final video duration is invalid."
+
+
+class FinalVideoInvalidDimensionsError(MediaError):
+    code = "FINAL_VIDEO_INVALID_DIMENSIONS"
+    public_message = "The final video dimensions are invalid."
+
+
+class FinalVideoInvalidFrameRateError(MediaError):
+    code = "FINAL_VIDEO_INVALID_FRAME_RATE"
+    public_message = "The final video frame rate is invalid."

@@ -2,9 +2,9 @@
 
 Local personal-use AI video transformation application.
 
-**Gate 6** transfers Gate 5 source motion onto the Gate 4 edited character via WaveSpeed Wan 2.2 Fun Control. Gates 1–5 remain unchanged in behavior.
+**Gate 7** assembles the final local video by splicing Gate 5 source motion with Gate 6 controlled character video at a detected transition point. Gates 1–6 remain unchanged in behavior.
 
-This gate does **not** detect transitions, merge clips, or ship a frontend.
+This gate does **not** ship a frontend or production hardening.
 
 ## Requirements
 
@@ -12,6 +12,7 @@ This gate does **not** detect transitions, merge clips, or ship a frontend.
 - FFmpeg and ffprobe on `PATH` (or set `FFMPEG_BINARY` / `FFPROBE_BINARY`)
 - Optional: WaveSpeed API key for live media/LLM smoke tests ([access key](https://wavespeed.ai/accesskey))
 - WaveSpeed SDK: `wavespeed>=1.0.9,<1.1`
+- Numpy (bounded) for lightweight frame-difference transition analysis
 
 ## PowerShell setup
 
@@ -41,37 +42,40 @@ Binds to `127.0.0.1` only. Docs: http://127.0.0.1:8000/docs
 
 ## Configuration
 
-See `.env.example`. Gate 6 additions:
+See `.env.example`. Gate 7 additions:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `WAVESPEED_CONTROL_VIDEO_MODEL` | `wavespeed-ai/wan-2.2/fun-control` | Fixed Fun Control model |
-| `WAVESPEED_CONTROL_VIDEO_DURATION_SECONDS` | `5` | Local validation target only (schema has no duration field) |
-| `WAVESPEED_CONTROL_VIDEO_RESOLUTION` | `480p` | Model `resolution` (`480p` or `720p`) |
-| `WAVESPEED_CONTROL_VIDEO_SEED` | `-1` | `-1` = provider-random |
-| `CONTROL_VIDEO_*` download/validation bounds | see `.env.example` | Download and ffprobe limits |
+| `TRANSITION_ANALYSIS_FPS` | `8` | Downscaled grayscale analysis FPS |
+| `TRANSITION_SEARCH_START_RATIO` | `0.35` | Search window start |
+| `TRANSITION_SEARCH_END_RATIO` | `0.70` | Search window end |
+| `TRANSITION_MIN_SECONDS_FROM_EDGE` | `0.75` | Clamp away from clip edges |
+| `TRANSITION_CONFIDENCE_THRESHOLD` | `0.08` | Below → midpoint fallback |
+| `TRANSITION_CROSSFADE_SECONDS` | `0.12` | Short visual crossfade |
+| `FINAL_VIDEO_MAX_*` / input deltas | see `.env.example` | Final validation and compatibility |
 
-Uses `WAVESPEED_API_BASE_URL` only. No model parameters from request bodies.
+Gate 7 is entirely local: no WaveSpeed, LLM, uploads, or network.
 
-## API (Gate 6)
+## API (Gate 7)
 
 | Method | Path | Behavior |
 |--------|------|----------|
-| `POST` | `/api/jobs/{id}/generate-controlled-video` | Accept async Fun Control (`202`) |
-| `GET` | `/api/jobs/{id}/controlled-video` | Local metadata when ready |
-| `GET` | `/api/jobs/{id}/controlled-video/file` | Local MP4 (`video/mp4`) |
+| `POST` | `/api/jobs/{id}/assemble-final-video` | Accept async local assembly (`202`) |
+| `GET` | `/api/jobs/{id}/transition` | Transition method/confidence when completed |
+| `GET` | `/api/jobs/{id}/final-video` | Final metadata when completed |
+| `GET` | `/api/jobs/{id}/final-video/file` | Local MP4 (`video/mp4`) |
 
 ### Workflow
 
-`SOURCE_VIDEO_READY` → `POST .../generate-controlled-video` → `CONTROL_VIDEO_GENERATING` → `CONTROL_VIDEO_READY`
+`CONTROL_VIDEO_READY` → `POST .../assemble-final-video` → `FINAL_VIDEO_ASSEMBLING` → `COMPLETED`
 
-**Inputs:** `edited_image.png` (identity) + `source_video.mp4` (motion). Base/reference images are never uploaded.
+**Inputs:** `source_video.mp4` + `controlled_video.mp4`. **Output:** `final/{job_id}/final_video.mp4` (~one clip duration, no audio).
 
 ## Architecture notes
 
-- **Paid generation retries:** dedicated generation client with `max_retries=0` and `max_connection_retries=0`; `run_model` always passes `max_task_retries=0`.
-- **Uploads:** edited image first, source video second; one Fun Control `run`.
-- **No LLM**, no base-image, edit, or I2V call during this stage.
+- Motion-energy peak in the middle search window; midpoint fallback when inconclusive.
+- Source before transition, controlled after; short `xfade`; H.264 / yuv420p / faststart / `-an`.
+- Atomic publish under `storage/final/{job_id}/`; transition sidecar `transition.json`.
 
 ## Tests
 

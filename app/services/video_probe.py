@@ -16,6 +16,10 @@ from app.providers.media_exceptions import (
     ControlVideoInvalidFileError,
     ControlVideoInvalidFrameRateError,
     FfprobeNotAvailableError,
+    FinalVideoInvalidDimensionsError,
+    FinalVideoInvalidDurationError,
+    FinalVideoInvalidFileError,
+    FinalVideoInvalidFrameRateError,
     MediaError,
     SourceVideoInvalidDimensionsError,
     SourceVideoInvalidDurationError,
@@ -61,6 +65,13 @@ CONTROL_VIDEO_ERRORS = VideoValidationErrors(
     invalid_dimensions=ControlVideoInvalidDimensionsError,
     invalid_duration=ControlVideoInvalidDurationError,
     invalid_frame_rate=ControlVideoInvalidFrameRateError,
+)
+
+FINAL_VIDEO_ERRORS = VideoValidationErrors(
+    invalid_file=FinalVideoInvalidFileError,
+    invalid_dimensions=FinalVideoInvalidDimensionsError,
+    invalid_duration=FinalVideoInvalidDurationError,
+    invalid_frame_rate=FinalVideoInvalidFrameRateError,
 )
 
 
@@ -280,3 +291,61 @@ def validate_control_video_probe(
         max_fps=max_fps,
         errors=CONTROL_VIDEO_ERRORS,
     )
+
+
+def validate_final_video_probe(
+    path: Path,
+    *,
+    ffprobe_binary: str,
+    target_duration: float,
+    min_duration: float,
+    max_duration: float,
+    duration_tolerance: float,
+    min_width: int,
+    min_height: int,
+    max_pixels: int,
+    max_fps: float,
+    require_no_audio: bool = True,
+) -> VideoMetadata:
+    """Validate a Gate 7 final assembled video (FinalVideo* error codes)."""
+    meta = validate_video_probe(
+        path,
+        ffprobe_binary=ffprobe_binary,
+        target_duration=target_duration,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        duration_tolerance=duration_tolerance,
+        min_width=min_width,
+        min_height=min_height,
+        max_pixels=max_pixels,
+        max_fps=max_fps,
+        errors=FINAL_VIDEO_ERRORS,
+    )
+    if require_no_audio and meta.has_audio:
+        raise FinalVideoInvalidFileError()
+
+    data = probe_video(
+        path,
+        ffprobe_binary=ffprobe_binary,
+        invalid_file_cls=FinalVideoInvalidFileError,
+    )
+    streams = data.get("streams") or []
+    video_streams = [
+        s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"
+    ]
+    if len(video_streams) != 1:
+        raise FinalVideoInvalidFileError()
+    video = video_streams[0]
+    codec = str(video.get("codec_name") or "").lower()
+    if codec not in {"h264", "avc1", "avc"}:
+        raise FinalVideoInvalidFileError()
+    pix_fmt = video.get("pix_fmt")
+    if pix_fmt is not None and str(pix_fmt).lower() not in {"yuv420p", "yuvj420p"}:
+        raise FinalVideoInvalidFileError()
+    format_info = data.get("format") if isinstance(data.get("format"), dict) else {}
+    container = str(format_info.get("format_name") or "").lower()
+    if "mp4" not in container and path.suffix.lower() != ".mp4":
+        raise FinalVideoInvalidFileError()
+    if meta.size_bytes <= 0:
+        raise FinalVideoInvalidFileError()
+    return meta

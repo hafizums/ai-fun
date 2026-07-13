@@ -61,6 +61,20 @@ class StorageService:
             path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def final_job_directory(self, job_id: str, *, create: bool = True) -> Path:
+        """Return the job-specific directory under final/."""
+        path = self.resolve_safe(Path("final") / self._safe_job_id(job_id))
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def temporary_job_directory(self, job_id: str, *, create: bool = True) -> Path:
+        """Return a job-scoped temporary directory under temporary/."""
+        path = self.resolve_safe(Path("temporary") / self._safe_job_id(job_id))
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def relative_under_root(self, path: Path) -> str:
         """Return a portable relative path string under the storage root."""
         resolved = path.resolve()
@@ -70,8 +84,13 @@ class StorageService:
             raise StoragePathError("Path escapes storage root") from exc
 
     def delete_job_files(self, job_id: str) -> None:
-        """Remove generated and upload job directories if they exist."""
-        for factory in (self.job_directory, self.upload_job_directory):
+        """Remove generated, upload, final, and temporary job directories if they exist."""
+        for factory in (
+            self.job_directory,
+            self.upload_job_directory,
+            self.final_job_directory,
+            self.temporary_job_directory,
+        ):
             path = factory(job_id, create=False)
             try:
                 path.relative_to(self.root)

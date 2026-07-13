@@ -12,6 +12,7 @@ ACTIVE_PROCESSING_STATES: frozenset[JobStatus] = frozenset(
         JobStatus.CHARACTER_EDITING,
         JobStatus.SOURCE_VIDEO_GENERATING,
         JobStatus.CONTROL_VIDEO_GENERATING,
+        JobStatus.FINAL_VIDEO_ASSEMBLING,
         JobStatus.ANALYZING_TRANSITION,
         JobStatus.MERGING,
     }
@@ -50,7 +51,10 @@ ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.CONTROL_VIDEO_GENERATING: frozenset(
         {JobStatus.CONTROL_VIDEO_READY, JobStatus.FAILED}
     ),
-    JobStatus.CONTROL_VIDEO_READY: frozenset(),
+    JobStatus.CONTROL_VIDEO_READY: frozenset({JobStatus.FINAL_VIDEO_ASSEMBLING}),
+    JobStatus.FINAL_VIDEO_ASSEMBLING: frozenset(
+        {JobStatus.COMPLETED, JobStatus.FAILED}
+    ),
     JobStatus.ANALYZING_TRANSITION: frozenset({JobStatus.FAILED}),
     JobStatus.MERGING: frozenset({JobStatus.FAILED}),
     JobStatus.COMPLETED: frozenset(),

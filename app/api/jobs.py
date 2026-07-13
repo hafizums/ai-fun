@@ -1,4 +1,4 @@
-﻿"""Job CRUD and generation stage APIs (prompts through controlled video)."""
+﻿"""Job CRUD and generation stage APIs (prompts through final video)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ from app.providers.media_exceptions import (
     ControlVideoInvalidFrameRateError,
     EditImageInvalidAspectRatioError,
     EditImageInvalidFileError,
+    FinalVideoInvalidDimensionsError,
+    FinalVideoInvalidDurationError,
+    FinalVideoInvalidFileError,
+    FinalVideoInvalidFrameRateError,
     MediaError,
     ReferenceImageInvalidFileError,
     SourceVideoInvalidDimensionsError,
@@ -39,6 +43,11 @@ from app.schemas.controlled_video import (
     ControlledVideoMetadataResponse,
     GenerateControlledVideoAcceptedResponse,
 )
+from app.schemas.final_video import (
+    AssembleFinalVideoAcceptedResponse,
+    FinalVideoMetadataResponse,
+    TransitionMetadataResponse,
+)
 from app.schemas.job import DeleteResponse, JobListResponse, JobResponse
 from app.schemas.prompt_api import GeneratePromptsAcceptedResponse, PromptEnvelopeResponse
 from app.schemas.prompts import PromptGenerationRequest
@@ -54,6 +63,10 @@ from app.services.character_edit_generation import (
 from app.services.control_video_generation import (
     CONTROL_VIDEO_FILENAME,
     local_controlled_video_url,
+)
+from app.services.final_video_assembly import (
+    FINAL_VIDEO_FILENAME,
+    local_final_video_url,
 )
 from app.services.image_normalize import (
     inspect_edited_png,
@@ -645,6 +658,140 @@ def get_controlled_video_file(job_id: str, request: Request) -> FileResponse:
             path,
             media_type="video/mp4",
             filename=f"controlled-video-{job_id}.mp4",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+
+@router.post(
+    "/{job_id}/assemble-final-video",
+    response_model=AssembleFinalVideoAcceptedResponse,
+    status_code=202,
+)
+def assemble_final_video(
+    job_id: str,
+    request: Request,
+) -> AssembleFinalVideoAcceptedResponse:
+    """Accept async local final-video assembly (no provider or network)."""
+    service = request.app.state.final_video_assembly
+    try:
+        job = service.accept_assembly(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return AssembleFinalVideoAcceptedResponse(
+        id=job.id,
+        status=job.status.value,
+        current_stage=job.current_stage,
+        progress_percent=job.progress_percent,
+    )
+
+
+@router.get("/{job_id}/transition", response_model=TransitionMetadataResponse)
+def get_transition_metadata(job_id: str, request: Request) -> TransitionMetadataResponse:
+    service = request.app.state.final_video_assembly
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.COMPLETED:
+            raise HTTPException(status_code=409, detail="Final video is not completed")
+        try:
+            meta = service.load_transition_meta(job_id)
+        except (FinalVideoInvalidFileError, MediaError) as exc:
+            logger.error("COMPLETED job_id=%s transition metadata invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored transition metadata is missing or invalid",
+            ) from exc
+        return TransitionMetadataResponse(
+            job_id=job_id,
+            transition_seconds=float(meta["transition_seconds"]),
+            method=str(meta["method"]),
+            confidence=float(meta["confidence"]),
+        )
+
+
+@router.get("/{job_id}/final-video", response_model=FinalVideoMetadataResponse)
+def get_final_video_metadata(
+    job_id: str, request: Request
+) -> FinalVideoMetadataResponse:
+    service = request.app.state.final_video_assembly
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.COMPLETED:
+            raise HTTPException(status_code=409, detail="Final video is not completed")
+        try:
+            info = service.inspect_ready_video(job_id)
+        except (
+            FinalVideoInvalidFileError,
+            FinalVideoInvalidDurationError,
+            FinalVideoInvalidDimensionsError,
+            FinalVideoInvalidFrameRateError,
+            MediaError,
+        ) as exc:
+            logger.error("COMPLETED job_id=%s final video invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored final video is missing or invalid",
+            ) from exc
+        transition = job.transition_time_seconds
+        if transition is None or not isinstance(transition, (int, float)):
+            logger.error("COMPLETED job_id=%s missing transition_time_seconds", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored final video metadata is inconsistent",
+            )
+        return FinalVideoMetadataResponse(
+            job_id=job_id,
+            status=job.status.value,
+            url=local_final_video_url(job_id),
+            transition_seconds=float(transition),
+            width=info.width,
+            height=info.height,
+            duration_seconds=info.duration_seconds,
+            fps=info.fps,
+            codec=info.codec,
+            container="mp4",
+            size_bytes=info.size_bytes,
+            has_audio=info.has_audio,
+        )
+
+
+@router.get("/{job_id}/final-video/file")
+def get_final_video_file(job_id: str, request: Request) -> FileResponse:
+    service = request.app.state.final_video_assembly
+    storage = request.app.state.storage
+    with request.app.state.session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != JobStatus.COMPLETED:
+            raise HTTPException(status_code=409, detail="Final video is not completed")
+        path = storage.final_job_directory(job_id, create=False) / FINAL_VIDEO_FILENAME
+        try:
+            service.inspect_ready_video(job_id)
+        except (
+            FinalVideoInvalidFileError,
+            FinalVideoInvalidDurationError,
+            FinalVideoInvalidDimensionsError,
+            FinalVideoInvalidFrameRateError,
+            MediaError,
+        ) as exc:
+            logger.error("COMPLETED job_id=%s final file serve invalid", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Stored final video is missing or invalid",
+            ) from exc
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            filename=f"final-video-{job_id}.mp4",
             headers={"Cache-Control": "private, max-age=3600"},
         )
 

@@ -22,6 +22,7 @@ from app.providers.wavespeed_llm import WaveSpeedLLMProvider
 from app.services.base_image_generation import BaseImageGenerationService
 from app.services.character_edit_generation import CharacterEditGenerationService
 from app.services.control_video_generation import ControlVideoGenerationService
+from app.services.final_video_assembly import FinalVideoAssemblyService
 from app.services.image_download import ImageDownloader, SecureArtifactDownloader
 from app.services.job_recovery import recover_interrupted_jobs
 from app.services.prompt_generation import PromptGenerationService
@@ -79,9 +80,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="AI Fun Motion",
         description=(
             "Local personal-use AI video transformation "
-            "(Gate 6: Fun Control motion transfer)"
+            "(Gate 7: local transition + final assembly)"
         ),
-        version="0.6.0",
+        version="0.7.0",
         lifespan=lifespan,
     )
 
@@ -158,6 +159,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings=app_settings,
         downloader=control_video_downloader,
     )
+    final_video_assembly = FinalVideoAssemblyService(
+        session_factory=session_factory,
+        task_runner=task_runner,
+        storage=storage,
+        settings=app_settings,
+    )
 
     app.state.settings = app_settings
     app.state.engine = engine
@@ -172,6 +179,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.character_edit_generation = character_edit_generation
     app.state.source_video_generation = source_video_generation
     app.state.control_video_generation = control_video_generation
+    app.state.final_video_assembly = final_video_assembly
     app.state.image_downloader = downloader
     app.state.video_downloader = video_downloader
     app.state.control_video_downloader = control_video_downloader

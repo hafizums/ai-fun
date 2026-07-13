@@ -246,6 +246,55 @@ class Settings(BaseSettings):
         alias="CONTROL_VIDEO_MAX_FPS",
     )
 
+    transition_analysis_fps: float = Field(
+        default=8.0,
+        alias="TRANSITION_ANALYSIS_FPS",
+    )
+    transition_search_start_ratio: float = Field(
+        default=0.35,
+        alias="TRANSITION_SEARCH_START_RATIO",
+    )
+    transition_search_end_ratio: float = Field(
+        default=0.70,
+        alias="TRANSITION_SEARCH_END_RATIO",
+    )
+    transition_min_seconds_from_edge: float = Field(
+        default=0.75,
+        alias="TRANSITION_MIN_SECONDS_FROM_EDGE",
+    )
+    transition_confidence_threshold: float = Field(
+        default=0.08,
+        alias="TRANSITION_CONFIDENCE_THRESHOLD",
+    )
+    transition_crossfade_seconds: float = Field(
+        default=0.12,
+        alias="TRANSITION_CROSSFADE_SECONDS",
+    )
+    final_video_max_duration_seconds: float = Field(
+        default=8.0,
+        alias="FINAL_VIDEO_MAX_DURATION_SECONDS",
+    )
+    final_video_max_pixels: int = Field(
+        default=5_000_000,
+        alias="FINAL_VIDEO_MAX_PIXELS",
+    )
+    final_video_max_fps: float = Field(
+        default=60.0,
+        alias="FINAL_VIDEO_MAX_FPS",
+    )
+    final_video_ffmpeg_timeout_seconds: float = Field(
+        default=180.0,
+        alias="FINAL_VIDEO_FFMPEG_TIMEOUT_SECONDS",
+    )
+    final_video_max_input_duration_delta_seconds: float = Field(
+        default=0.35,
+        alias="FINAL_VIDEO_MAX_INPUT_DURATION_DELTA_SECONDS",
+    )
+    final_video_max_dimension_delta_pixels: int = Field(
+        default=8,
+        alias="FINAL_VIDEO_MAX_DIMENSION_DELTA_PIXELS",
+    )
+
     storage_root: Path = Field(default=PROJECT_ROOT / "storage", alias="STORAGE_ROOT")
     local_task_workers: int = Field(default=1, ge=1, alias="LOCAL_TASK_WORKERS")
     ffmpeg_binary: str = Field(default="ffmpeg", alias="FFMPEG_BINARY")
@@ -445,6 +494,53 @@ class Settings(BaseSettings):
     def _validate_control_max_fps(cls, value: object) -> float:
         return _finite_positive(value, name="CONTROL_VIDEO_MAX_FPS", maximum=240)
 
+    @field_validator("transition_analysis_fps", mode="before")
+    @classmethod
+    def _validate_transition_fps(cls, value: object) -> float:
+        return _finite_positive(value, name="TRANSITION_ANALYSIS_FPS", maximum=30)
+
+    @field_validator(
+        "transition_search_start_ratio",
+        "transition_search_end_ratio",
+        mode="before",
+    )
+    @classmethod
+    def _validate_transition_ratio(cls, value: object) -> float:
+        number = float(value)  # type: ignore[arg-type]
+        if not (0.0 <= number <= 1.0):
+            raise ValueError("TRANSITION_SEARCH ratios must be between 0 and 1")
+        return number
+
+    @field_validator(
+        "transition_min_seconds_from_edge",
+        "transition_confidence_threshold",
+        "transition_crossfade_seconds",
+        "final_video_max_duration_seconds",
+        "final_video_max_fps",
+        "final_video_ffmpeg_timeout_seconds",
+        "final_video_max_input_duration_delta_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _validate_final_positive_floats(cls, value: object) -> float:
+        return _finite_positive(value, name="FINAL_OR_TRANSITION_BOUND", maximum=1800)
+
+    @field_validator("final_video_max_pixels", mode="before")
+    @classmethod
+    def _validate_final_max_pixels(cls, value: object) -> int:
+        return int(
+            _finite_positive(value, name="FINAL_VIDEO_MAX_PIXELS", maximum=50_000_000)
+        )
+
+    @field_validator("final_video_max_dimension_delta_pixels", mode="before")
+    @classmethod
+    def _validate_final_dim_delta(cls, value: object) -> int:
+        return int(
+            _finite_positive(
+                value, name="FINAL_VIDEO_MAX_DIMENSION_DELTA_PIXELS", maximum=1000
+            )
+        )
+
     @field_validator("storage_root", mode="before")
     @classmethod
     def _resolve_storage_root(cls, value: object) -> Path:
@@ -522,6 +618,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CONTROL_VIDEO_MIN_WIDTH * CONTROL_VIDEO_MIN_HEIGHT must be "
                 "<= CONTROL_VIDEO_MAX_PIXELS"
+            )
+        if self.transition_search_start_ratio >= self.transition_search_end_ratio:
+            raise ValueError(
+                "TRANSITION_SEARCH_START_RATIO must be < TRANSITION_SEARCH_END_RATIO"
+            )
+        if self.transition_crossfade_seconds >= self.transition_min_seconds_from_edge:
+            raise ValueError(
+                "TRANSITION_CROSSFADE_SECONDS must be < TRANSITION_MIN_SECONDS_FROM_EDGE"
             )
 
 
