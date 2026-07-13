@@ -27,9 +27,30 @@ app/api/ui.py   # GET /, GET /jobs/{id}, /static mount, CSP middleware
 
 - `GET /` and `GET /jobs/{job_id}` return the same HTML shell
 - `StaticFiles` mounted at `/static`
-- Security middleware adds CSP, `nosniff`, `Referrer-Policy`
+- Global headers: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+- Strict UI CSP (`UI_CONTENT_SECURITY_POLICY`) only on `/`, `/jobs/*`, `/static/*`
 - App version `0.8.0`; `/docs`, `/openapi.json`, `/api/*` unchanged
 
+## Browser security
+
+- No `innerHTML` for server strings (`textContent` / DOM create)
+- No `eval` / `new Function` / remote scripts
+- UI CSP: `default-src 'self'`; `img-src`/`media-src` allow `blob:`; no `unsafe-eval`
+
+### Global-CSP finding (Gate 8 FAIL) and correction
+
+**Finding:** The initial Gate 8 middleware attached the strict self-only CSP to every response, including `/docs`. Swagger UI loads CDN assets and an inline bootstrap script, so `/docs` could return HTTP 200 while remaining unusable in a browser.
+
+**Correction:** Path-aware scoping:
+
+| Route class | Strict UI CSP |
+|-------------|---------------|
+| `/`, `/jobs/{id}`, `/static/*` | Yes |
+| `/docs`, `/redoc`, `/openapi.json`, `/api/*`, `/health` | No |
+
+HTML shell responses also set the CSP explicitly via `_html_shell()`. The UI CSP was not weakened with `unsafe-inline`, `unsafe-eval`, `*`, or `https:`.
+
+**`/docs` verification:** Header tests assert `/docs` has no UI CSP and still embeds Swagger markup; manual browser load confirms Swagger UI renders.
 ## Workflow and status mapping
 
 Centralized in `workflow.js` (`AIFunWorkflow.STATUS_VIEW`):
@@ -93,21 +114,16 @@ Desktop two-column workspace; tablet/mobile stack with compact stepper. Touch ta
 
 Semantic regions, labels, `aria-live`, native dialogs, visible `:focus-visible`, `prefers-reduced-motion`, meaningful image alts.
 
-## Browser security
-
-- No `innerHTML` for server strings (`textContent` / DOM create)
-- No `eval` / `new Function` / remote scripts
-- CSP: `default-src 'self'`; `img-src`/`media-src` allow `blob:`; no `unsafe-eval`
-
 ## API usage
 
 Uses existing Gate 1–7 endpoints only. No provider calls from the browser. No frontend-supplied model names or generation parameters.
 
 ## Tests
 
-- `tests/test_gate8_ui.py` — HTML/static/headers/contracts
+- `tests/test_gate8_ui.py` — HTML/static/scoped CSP headers/contracts
 - `tests/test_gate8_workflow.py` + `tests/js/workflow.test.mjs` — JS syntax and pure mapping
 - Full suite regression: Gates 1–7 retained
+- CSP scope: UI routes have strict CSP; `/docs`, `/openapi.json`, `/api/*`, `/health` do not
 
 ## Manual QA
 
@@ -117,6 +133,7 @@ Uses existing Gate 1–7 endpoints only. No provider calls from the browser. No 
 - **New project** creates job, updates URL to `/jobs/{id}`, shows prompt form
 - **Generate prompts** opens paid confirmation dialog (cancelled — no paid run)
 - Refresh-restore path supported via URL + optional `last_job_id` in localStorage
+- `/docs` loads Swagger UI after CSP scoping correction (no restrictive UI CSP on docs)
 
 ### Mobile (390×844)
 
@@ -131,6 +148,8 @@ Layout CSS verified for narrow breakpoints (stepper wraps, workspace stacks). Fu
 - Frontend files scanned: no `WAVESPEED_API_KEY`, `sk-`, `eval(`, `new Function`, `unsafe-eval`, or remote `http(s)://` asset loads
 - UI page load does not invoke the media provider
 - No automatic paid chaining or paid retry
+- Strict UI CSP excludes `unsafe-eval` and remote asset permissions
+- Documentation/API routes are not covered by the UI CSP
 
 ## Known limitations
 
@@ -145,6 +164,8 @@ Auth, deployment hardening, cloud storage, billing, analytics, multi-user suppor
 
 ## Git information
 
-- Starting HEAD: `4cea05c84201cc914ac29970c882b25082e7f7ff`
+- Starting HEAD (Gate 8): `4cea05c84201cc914ac29970c882b25082e7f7ff`
 - Implementation commit: `e49ea2c0ad0c0207a0380e28c6b98932ec28ab1c`
-- Final HEAD: `e49ea2c0ad0c0207a0380e28c6b98932ec28ab1c`
+- Correction starting HEAD: `b700975af18bdb8272680e6314901a4c5eba2728`
+- Correction commit: (see push)
+- Final HEAD: (see push)

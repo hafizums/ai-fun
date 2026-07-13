@@ -11,16 +11,45 @@ from fastapi.staticfiles import StaticFiles
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 INDEX_HTML = WEB_DIR / "index.html"
 
+# Strict CSP for the local app shell and static UI assets only.
+# Must NOT be applied to /docs, /redoc, /openapi.json, /api/*, or /health.
+UI_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "img-src 'self' blob:; "
+    "media-src 'self' blob:; "
+    "style-src 'self'; "
+    "script-src 'self'; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
 router = APIRouter(tags=["ui"])
+
+
+def path_receives_ui_csp(path: str) -> bool:
+    """Return True when the request path is a UI-owned surface."""
+    if path == "/":
+        return True
+    if path.startswith("/jobs/"):
+        return True
+    if path.startswith("/static/"):
+        return True
+    return False
 
 
 def _html_shell() -> HTMLResponse:
     if not INDEX_HTML.is_file():
         raise HTTPException(status_code=500, detail="UI shell is missing")
-    return HTMLResponse(
+    response = HTMLResponse(
         content=INDEX_HTML.read_text(encoding="utf-8"),
         media_type="text/html; charset=utf-8",
     )
+    response.headers["Content-Security-Policy"] = UI_CONTENT_SECURITY_POLICY
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -45,7 +74,7 @@ def mount_static(app) -> None:  # type: ignore[no-untyped-def]
 
 
 def security_headers_middleware(app) -> None:  # type: ignore[no-untyped-def]
-    """Attach local-safe security headers to all responses."""
+    """Attach safe global headers; strict UI CSP only on UI-owned paths."""
     from fastapi import Request
 
     @app.middleware("http")
@@ -53,17 +82,8 @@ def security_headers_middleware(app) -> None:  # type: ignore[no-untyped-def]
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
-        # Local personal-use CSP: self only; blob for object-URL previews.
-        csp = (
-            "default-src 'self'; "
-            "img-src 'self' blob:; "
-            "media-src 'self' blob:; "
-            "style-src 'self'; "
-            "script-src 'self'; "
-            "connect-src 'self'; "
-            "object-src 'none'; "
-            "base-uri 'self'; "
-            "form-action 'self'"
-        )
-        response.headers.setdefault("Content-Security-Policy", csp)
+        if path_receives_ui_csp(request.url.path):
+            response.headers.setdefault(
+                "Content-Security-Policy", UI_CONTENT_SECURITY_POLICY
+            )
         return response

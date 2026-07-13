@@ -68,14 +68,70 @@ def test_docs_and_api_still_work(client: TestClient) -> None:
     assert client.get(f"/api/jobs/{job_id}").status_code == 200
 
 
-def test_security_headers_on_ui(client: TestClient) -> None:
-    resp = client.get("/")
-    assert resp.headers.get("X-Content-Type-Options") == "nosniff"
-    assert resp.headers.get("Referrer-Policy") == "no-referrer"
-    csp = resp.headers.get("Content-Security-Policy", "")
+def _assert_strict_ui_csp(csp: str) -> None:
     assert "default-src 'self'" in csp
-    assert "unsafe-eval" not in csp
     assert "script-src 'self'" in csp
+    assert "style-src 'self'" in csp
+    assert "unsafe-eval" not in csp
+    assert "unsafe-inline" not in csp
+    assert "https:" not in csp
+    assert "http:" not in csp
+    assert "*" not in csp.replace("'self'", "")
+
+
+def test_security_headers_scoped_csp(client: TestClient) -> None:
+    from app.api.ui import UI_CONTENT_SECURITY_POLICY
+
+    index = client.get("/")
+    assert index.headers.get("X-Content-Type-Options") == "nosniff"
+    assert index.headers.get("Referrer-Policy") == "no-referrer"
+    assert index.headers.get("Content-Security-Policy") == UI_CONTENT_SECURITY_POLICY
+    _assert_strict_ui_csp(index.headers["Content-Security-Policy"])
+
+    job_id = client.post("/api/jobs").json()["id"]
+    job_page = client.get(f"/jobs/{job_id}")
+    assert job_page.headers.get("Content-Security-Policy") == UI_CONTENT_SECURITY_POLICY
+    _assert_strict_ui_csp(job_page.headers["Content-Security-Policy"])
+
+    static_js = client.get("/static/app.js")
+    assert static_js.status_code == 200
+    assert static_js.headers.get("Content-Security-Policy") == UI_CONTENT_SECURITY_POLICY
+    assert static_js.headers.get("X-Content-Type-Options") == "nosniff"
+    assert static_js.headers.get("Referrer-Policy") == "no-referrer"
+
+    docs = client.get("/docs")
+    assert docs.status_code == 200
+    assert docs.headers.get("Content-Security-Policy") is None
+    assert docs.headers.get("X-Content-Type-Options") == "nosniff"
+    assert docs.headers.get("Referrer-Policy") == "no-referrer"
+    # Swagger HTML must retain its CDN script tags (browser can load them without UI CSP).
+    assert "swagger-ui" in docs.text.lower() or "SwaggerUIBundle" in docs.text
+
+    openapi = client.get("/openapi.json")
+    assert openapi.status_code == 200
+    assert openapi.headers.get("Content-Security-Policy") is None
+
+    api = client.get(f"/api/jobs/{job_id}")
+    assert api.status_code == 200
+    assert api.headers.get("Content-Security-Policy") is None
+    assert api.headers.get("X-Content-Type-Options") == "nosniff"
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.headers.get("Content-Security-Policy") is None
+
+
+def test_path_receives_ui_csp_helper() -> None:
+    from app.api.ui import path_receives_ui_csp
+
+    assert path_receives_ui_csp("/") is True
+    assert path_receives_ui_csp("/jobs/abc") is True
+    assert path_receives_ui_csp("/static/app.js") is True
+    assert path_receives_ui_csp("/docs") is False
+    assert path_receives_ui_csp("/redoc") is False
+    assert path_receives_ui_csp("/openapi.json") is False
+    assert path_receives_ui_csp("/api/jobs") is False
+    assert path_receives_ui_csp("/health") is False
 
 
 def test_frontend_files_have_no_secrets_or_remote(client: TestClient) -> None:
