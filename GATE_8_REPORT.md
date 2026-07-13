@@ -167,5 +167,6 @@ Auth, deployment hardening, cloud storage, billing, analytics, multi-user suppor
 - Starting HEAD (Gate 8): `4cea05c84201cc914ac29970c882b25082e7f7ff`
 - Implementation commit: `e49ea2c0ad0c0207a0380e28c6b98932ec28ab1c`
 - Correction starting HEAD: `b700975af18bdb8272680e6314901a4c5eba2728`
-- Correction commit: (see push)
-- Final HEAD: (see push)
+- Correction commit: `3afc6d3dc258475a619693fe2ee1f6beb2024157`
+- Final HEAD: `3afc6d3dc258475a619693fe2ee1f6beb2024157`
+- Validation: `312 passed`; Ruff clean; Node workflow tests ok
